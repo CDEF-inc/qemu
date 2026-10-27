@@ -280,6 +280,11 @@ static void rx_cpu_get_banks(Object *obj, Visitor *v, const char *name,
 static void rx_cpu_set_banks(Object *obj, Visitor *v, const char *name,
                              void *opaque, Error **errp)
 {
+    /* Like the features, read by the translator */
+    if (DEVICE(obj)->realized) {
+        qdev_prop_set_after_realize(DEVICE(obj), name, errp);
+        return;
+    }
     visit_type_uint32(v, name, &RX_CPU(obj)->env.nr_banks, errp);
 }
 
