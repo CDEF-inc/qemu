@@ -44,6 +44,16 @@ the A1 and shift forms of the RXv1 ones).
 RXv3 and later cores add ``bfmov``, ``bfmovz``, the three-operand ``xor``
 and the register bank save function (``save``, ``rstr``).
 
+``rxv3e`` cores have the CPU side of the Protect Zone function: the root,
+secure and non-secure worlds (WID), the control registers that each world
+has its own copy of (ISP, INTB, BPC, BPSW, EXTB, IVC), the access rules of
+the control registers per world, IVC, WPRI, TRCTB and WINTB, the
+instructions ``trcall``, ``trrte``, ``trmvfc``, ``trmvtc`` and ``int Rs``,
+and a 5-bit PSW.IPL (4 bits in the non-secure world). Interrupts that
+cause world transitions, secure exceptions and the non-secure interrupt
+control (IVC.NSIC) need interrupt controller and memory protection support
+that the RX62N based boards do not have.
+
 With ``dfpu`` (the default on ``rxv3`` and ``rxv3e``), the double-precision
 FPU: DR0-DR15, the control registers DPSW, DCMR, DECNT and DEPC, and its 21
 instructions. Double-precision floating-point exceptions are reported as an

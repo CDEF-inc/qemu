@@ -41,7 +41,7 @@ FIELD(PSW, O, 3, 1)
 FIELD(PSW, I, 16, 1)
 FIELD(PSW, U, 17, 1)
 FIELD(PSW, PM, 20, 1)
-FIELD(PSW, IPL, 24, 4)
+FIELD(PSW, IPL, 24, 5)            /* IPL[4] on RXv3e only */
 
 /* FPSW define */
 REG32(FPSW, 0)
@@ -77,6 +77,41 @@ FIELD(DPSW, DDN, 8, 1)
 FIELD(DPSW, ENABLE, 10, 5)
 FIELD(DPSW, FLAGS, 26, 4)
 FIELD(DPSW, DFS, 31, 1)
+
+/* IVC define (RXv3e) */
+REG32(IVC, 0)
+FIELD(IVC, BWINM, 0, 8)
+FIELD(IVC, UIR, 16, 2)
+FIELD(IVC, NSIC, 24, 1)
+FIELD(IVC, EXCSE, 28, 1)
+
+/* WID define (RXv3e) */
+REG32(WID, 0)
+FIELD(WID, WID, 0, 2)
+FIELD(WID, BWID, 8, 2)
+FIELD(WID, BITW, 16, 2)
+FIELD(WID, BWI, 31, 1)
+
+/* WPRI define (RXv3e) */
+REG32(WPRI, 0)
+FIELD(WPRI, WIPL, 24, 5)
+
+/* TB flags: PSW.PM and PSW.U at their PSW positions, and the world */
+REG32(TB, 0)
+FIELD(TB, WORLD, 0, 2)
+
+/* The worlds of the RXv3e Protect Zone function */
+enum {
+    RX_WORLD_ROOT = 0,
+    RX_WORLD_SECURE = 1,
+    RX_WORLD_NONSECURE = 2,
+};
+
+/* The control registers that RXv3e implements once per world */
+enum {
+    RX_WCR_ISP, RX_WCR_INTB, RX_WCR_BPC, RX_WCR_BPSW, RX_WCR_EXTB, RX_WCR_IVC,
+    RX_WCR_NUM,
+};
 
 /* DECNT define */
 REG32(DECNT, 0)
@@ -138,6 +173,16 @@ typedef struct CPUArchState {
     uint32_t dcmr;
     uint32_t decnt;
     uint32_t depc;
+    /*
+     * RXv3e: isp, intb, bpc, bpsw, extb and ivc are those of the current
+     * world; world_cr keeps the other worlds' (RX_WCR_*).
+     */
+    uint32_t ivc;
+    uint32_t wid;
+    uint32_t wpri;
+    uint32_t trctb;
+    uint32_t wintb;
+    uint32_t world_cr[3][RX_WCR_NUM];
 
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;
@@ -203,6 +248,15 @@ static inline bool rx_has_feature(CPURXState *env, uint32_t feature)
 {
     return (env->features & feature) != 0;
 }
+
+/* The current world (RX_WORLD_*); always root before RXv3e */
+static inline int rx_world(CPURXState *env)
+{
+    return FIELD_EX32(env->wid, WID, WID);
+}
+
+void rx_world_switch(CPURXState *env, int world);
+uint32_t *rx_world_cr(CPURXState *env, int world, int idx);
 
 #define CPU_INTERRUPT_SOFT CPU_INTERRUPT_TGT_INT_0
 #define CPU_INTERRUPT_FIR  CPU_INTERRUPT_TGT_INT_1

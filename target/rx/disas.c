@@ -732,6 +732,48 @@ static bool trans_DPOPM_l(DisasContext *ctx, arg_DPOPM_l *a)
     return true;
 }
 
+/* RXv3e */
+static const char rx_cr_names[16][6] = {
+    "psw", "pc", "usp", "fpsw", "", "ivc", "", "",
+    "bpsw", "bpc", "isp", "fintv", "intb", "extb", "trctb", "wintb",
+};
+
+static bool trans_INT_r(DisasContext *ctx, arg_INT_r *a)
+{
+    prt("int\tr%d", a->rs);
+    return true;
+}
+
+static bool trans_TRCALL(DisasContext *ctx, arg_TRCALL *a)
+{
+    prt("trcall\t#%d", a->imm);
+    return true;
+}
+
+static bool trans_TRRTE(DisasContext *ctx, arg_TRRTE *a)
+{
+    prt("trrte");
+    return true;
+}
+
+static bool trans_TRMVFC(DisasContext *ctx, arg_TRMVFC *a)
+{
+    prt("trmvfc\t%s, r%d", rx_cr_names[a->cr], a->rd);
+    return true;
+}
+
+static bool trans_TRMVTC_r(DisasContext *ctx, arg_TRMVTC_r *a)
+{
+    prt("trmvtc\tr%d, %s", a->rs, rx_cr_names[a->cr]);
+    return true;
+}
+
+static bool trans_TRMVTC_i(DisasContext *ctx, arg_TRMVTC_i *a)
+{
+    prt("trmvtc\t#0x%08x, %s", a->imm, rx_cr_names[a->cr]);
+    return true;
+}
+
 /* save #uimm8 */
 static bool trans_SAVE_i(DisasContext *ctx, arg_SAVE_i *a)
 {
