@@ -44,6 +44,12 @@ the A1 and shift forms of the RXv1 ones).
 RXv3 and later cores add ``bfmov``, ``bfmovz``, the three-operand ``xor``
 and the register bank save function (``save``, ``rstr``).
 
+With ``dfpu`` (the default on ``rxv3`` and ``rxv3e``), the double-precision
+FPU: DR0-DR15, the control registers DPSW, DCMR, DECNT and DEPC, and its 21
+instructions. Double-precision floating-point exceptions are reported as an
+interrupt request to the interrupt controller; the RX62N based boards have
+no source for that request, so it is only recorded in DEPC and DECNT.
+
 Example of ``qemu-system-rx`` usage for RX is shown below:
 
 Download ``<u-boot_image_file>`` from

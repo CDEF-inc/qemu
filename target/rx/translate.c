@@ -491,6 +491,9 @@ static bool trans_MOV_ir(DisasContext *ctx, arg_MOV_ir *a)
 static bool trans_MOV_im(DisasContext *ctx, arg_MOV_im *a)
 {
     TCGv_i32 imm, mem;
+    if (a->sz == 3) {
+        return false;
+    }
     imm = tcg_constant_i32(a->imm);
     mem = tcg_temp_new_i32();
     tcg_gen_addi_i32(mem, cpu_regs[a->rd], a->dsp << a->sz);
@@ -1051,6 +1054,371 @@ static bool trans_BFMOVZ(DisasContext *ctx, arg_BFMOVZ *a)
         return false;
     }
     rx_bfmov(ctx, a->rs, a->rd, true);
+    return true;
+}
+
+/*
+ * Double-precision FPU (RXv3, the dfpu property). DR0-DR15 and the control
+ * registers live in env; the operations are helpers (op_helper.c).
+ */
+static bool dfpu(DisasContext *ctx)
+{
+    return has_feature(ctx, RX_FEATURE_DFPU);
+}
+
+static int dr_offset(int n)
+{
+    return offsetof(CPURXState, dr) + n * sizeof(uint64_t);
+}
+
+static int dcr_offset(int n)
+{
+    static const int offset[] = {
+        offsetof(CPURXState, dpsw), offsetof(CPURXState, dcmr),
+        offsetof(CPURXState, decnt), offsetof(CPURXState, depc),
+    };
+    return offset[n];
+}
+
+#define DFPU_OP2(name, op)                                              \
+    static bool trans_##name(DisasContext *ctx, arg_##name * a)         \
+    {                                                                   \
+        if (!dfpu(ctx)) {                                               \
+            return false;                                               \
+        }                                                               \
+        gen_helper_##op(tcg_env, tcg_constant_i32(a->rd),               \
+                        tcg_constant_i32(a->rs), tcg_constant_i32(a->rs2), \
+                        tcg_constant_i32(ctx->pc));                     \
+        return true;                                                    \
+    }
+
+DFPU_OP2(DADD, dadd)
+DFPU_OP2(DSUB, dsub)
+DFPU_OP2(DMUL, dmul)
+DFPU_OP2(DDIV, ddiv)
+
+static bool trans_DCMP(DisasContext *ctx, arg_DCMP * a)
+{
+    if (!dfpu(ctx)) {
+        return false;
+    }
+    gen_helper_dcmp(tcg_env, tcg_constant_i32(a->cm), tcg_constant_i32(a->rs),
+                    tcg_constant_i32(a->rs2), tcg_constant_i32(ctx->pc));
+    return true;
+}
+
+#define DFPU_OP1(name, op)                                              \
+    static bool trans_##name(DisasContext *ctx, arg_##name * a)         \
+    {                                                                   \
+        if (!dfpu(ctx)) {                                               \
+            return false;                                               \
+        }                                                               \
+        gen_helper_##op(tcg_env, tcg_constant_i32(a->rd),               \
+                        tcg_constant_i32(a->rs), tcg_constant_i32(ctx->pc)); \
+        return true;                                                    \
+    }
+
+DFPU_OP1(DSQRT, dsqrt)
+DFPU_OP1(DTOI, dtoi)
+DFPU_OP1(DTOU, dtou)
+DFPU_OP1(DTOF, dtof)
+DFPU_OP1(DROUND, dround)
+
+/* ftod / itod / utod rs, drd */
+#define DFPU_FROM_GPR(name, op)                                         \
+    static bool trans_##name(DisasContext *ctx, arg_##name * a)         \
+    {                                                                   \
+        if (!dfpu(ctx)) {                                               \
+            return false;                                               \
+        }                                                               \
+        gen_helper_##op(tcg_env, tcg_constant_i32(a->rd), cpu_regs[a->rs], \
+                        tcg_constant_i32(ctx->pc));                     \
+        return true;                                                    \
+    }
+
+DFPU_FROM_GPR(FTOD, ftod)
+DFPU_FROM_GPR(ITOD, itod)
+DFPU_FROM_GPR(UTOD, utod)
+
+/* dmov.d drs, drd; dabs / dneg drs, drd (no flags) */
+static void gen_dfpu_sign(int rd, int rs, int op)
+{
+    TCGv_i64 val = tcg_temp_new_i64();
+
+    tcg_gen_ld_i64(val, tcg_env, dr_offset(rs));
+    if (op == 1) {
+        tcg_gen_andi_i64(val, val, INT64_MAX);
+    } else if (op == 2) {
+        tcg_gen_xori_i64(val, val, INT64_MIN);
+    }
+    tcg_gen_st_i64(val, tcg_env, dr_offset(rd));
+}
+
+static bool trans_DMOV_dd(DisasContext *ctx, arg_DMOV_dd *a)
+{
+    if (!dfpu(ctx)) {
+        return false;
+    }
+    gen_dfpu_sign(a->rd, a->rs, 0);
+    return true;
+}
+
+static bool trans_DABS(DisasContext *ctx, arg_DABS *a)
+{
+    if (!dfpu(ctx)) {
+        return false;
+    }
+    gen_dfpu_sign(a->rd, a->rs, 1);
+    return true;
+}
+
+static bool trans_DNEG(DisasContext *ctx, arg_DNEG *a)
+{
+    if (!dfpu(ctx)) {
+        return false;
+    }
+    gen_dfpu_sign(a->rd, a->rs, 2);
+    return true;
+}
+
+/*
+ * Write a 32-bit value to the upper (hi) or lower half of drd; dmov.d to
+ * the upper half (zero) clears the lower half.
+ */
+static void gen_dmov_to_dr(int rd, TCGv_i32 val, bool hi, bool zero)
+{
+    TCGv_i64 dr = tcg_temp_new_i64();
+    TCGv_i64 v = tcg_temp_new_i64();
+
+    tcg_gen_extu_i32_i64(v, val);
+    if (zero) {
+        tcg_gen_shli_i64(dr, v, 32);
+    } else {
+        tcg_gen_ld_i64(dr, tcg_env, dr_offset(rd));
+        tcg_gen_deposit_i64(dr, dr, v, hi ? 32 : 0, 32);
+    }
+    tcg_gen_st_i64(dr, tcg_env, dr_offset(rd));
+}
+
+/* dmov.d / dmov.l rs, drhd */
+static bool trans_DMOV_rdh(DisasContext *ctx, arg_DMOV_rdh * a)
+{
+    if (!dfpu(ctx)) {
+        return false;
+    }
+    gen_dmov_to_dr(a->rd, cpu_regs[a->rs], true, a->d);
+    return true;
+}
+
+/* dmov.l rs, drld */
+static bool trans_DMOV_rdl(DisasContext *ctx, arg_DMOV_rdl *a)
+{
+    if (!dfpu(ctx)) {
+        return false;
+    }
+    gen_dmov_to_dr(a->rd, cpu_regs[a->rs], false, false);
+    return true;
+}
+
+/* dmov.d / dmov.l #imm, drhd; dmov.l #imm, drld */
+static bool trans_DMOV_ir(DisasContext *ctx, arg_DMOV_ir *a)
+{
+    if (!dfpu(ctx) || (a->sub != 0 && a->sub != 2 && a->sub != 3)) {
+        return false;
+    }
+    gen_dmov_to_dr(a->rd, tcg_constant_i32(li(ctx, 0)), a->sub != 0,
+                   a->sub == 3);
+    return true;
+}
+
+/* dmov.l drhs / drls, rd */
+static void gen_dmov_from_dr(int rd, int rs, bool hi)
+{
+    TCGv_i64 dr = tcg_temp_new_i64();
+
+    tcg_gen_ld_i64(dr, tcg_env, dr_offset(rs));
+    if (hi) {
+        tcg_gen_extrh_i64_i32(cpu_regs[rd], dr);
+    } else {
+        tcg_gen_extrl_i64_i32(cpu_regs[rd], dr);
+    }
+}
+
+static bool trans_DMOV_dhr(DisasContext *ctx, arg_DMOV_dhr *a)
+{
+    if (!dfpu(ctx)) {
+        return false;
+    }
+    gen_dmov_from_dr(a->rd, a->rs, true);
+    return true;
+}
+
+static bool trans_DMOV_dlr(DisasContext *ctx, arg_DMOV_dlr *a)
+{
+    if (!dfpu(ctx)) {
+        return false;
+    }
+    gen_dmov_from_dr(a->rd, a->rs, false);
+    return true;
+}
+
+/*
+ * dmov.d drs, dsp[rd] / dmov.d dsp[rs], drd: dsp (scaled by 8) comes
+ * before the byte with the DR number in its upper half.
+ */
+static int dmov_mem_dr(DisasContext *ctx)
+{
+    int b = translator_ldub(ctx->env, &ctx->base, ctx->base.pc_next++);
+
+    return (b & 0xf) ? -1 : b >> 4;
+}
+
+static bool trans_DMOV_dm(DisasContext *ctx, arg_DMOV_dm *a)
+{
+    TCGv_i32 mem, addr;
+    TCGv_i64 val;
+    int dr;
+
+    if (!dfpu(ctx) || a->ld == 3) {
+        return false;
+    }
+    mem = tcg_temp_new_i32();
+    addr = rx_index_addr(ctx, mem, a->ld, MO_64, a->rd);
+    dr = dmov_mem_dr(ctx);
+    if (dr < 0) {
+        return false;
+    }
+    val = tcg_temp_new_i64();
+    tcg_gen_ld_i64(val, tcg_env, dr_offset(dr));
+    tcg_gen_qemu_st_i64(val, addr, 0, MO_64 | mo_endian(ctx));
+    return true;
+}
+
+static bool trans_DMOV_md(DisasContext *ctx, arg_DMOV_md *a)
+{
+    TCGv_i32 mem, addr;
+    TCGv_i64 val;
+    int dr;
+
+    if (!dfpu(ctx) || a->ld == 3) {
+        return false;
+    }
+    mem = tcg_temp_new_i32();
+    addr = rx_index_addr(ctx, mem, a->ld, MO_64, a->rs);
+    dr = dmov_mem_dr(ctx);
+    if (dr < 0) {
+        return false;
+    }
+    val = tcg_temp_new_i64();
+    tcg_gen_qemu_ld_i64(val, addr, 0, MO_64 | mo_endian(ctx));
+    tcg_gen_st_i64(val, tcg_env, dr_offset(dr));
+    return true;
+}
+
+/* mvtdc rs, dcrd / mvfdc dcrs, rd */
+static bool trans_MVTDC(DisasContext *ctx, arg_MVTDC *a)
+{
+    if (!dfpu(ctx) || a->cr > 3) {
+        return false;
+    }
+    gen_helper_mvtdc(tcg_env, tcg_constant_i32(a->cr), cpu_regs[a->rs]);
+    return true;
+}
+
+static bool trans_MVFDC(DisasContext *ctx, arg_MVFDC *a)
+{
+    if (!dfpu(ctx) || a->cr > 3) {
+        return false;
+    }
+    tcg_gen_ld_i32(cpu_regs[a->rd], tcg_env, dcr_offset(a->cr));
+    return true;
+}
+
+/* mvfdr: Z = DCMR.RES */
+static bool trans_MVFDR(DisasContext *ctx, arg_MVFDR *a)
+{
+    if (!dfpu(ctx)) {
+        return false;
+    }
+    tcg_gen_ld_i32(cpu_psw_z, tcg_env, offsetof(CPURXState, dcmr));
+    tcg_gen_andi_i32(cpu_psw_z, cpu_psw_z, 1);
+    tcg_gen_xori_i32(cpu_psw_z, cpu_psw_z, 1);
+    return true;
+}
+
+/*
+ * dpushm / dpopm .d drs-drs2 (8 bytes each) and .l dcrs-dcrs2 (4 bytes
+ * each); n is the number of registers less one. dpushm pushes from the
+ * last register, so the first one ends up at the lowest address.
+ */
+static bool dpushm_ok(DisasContext *ctx, int rs, int n, int last)
+{
+    return dfpu(ctx) && rs + n <= last;
+}
+
+static bool trans_DPUSHM_d(DisasContext *ctx, arg_DPUSHM_d *a)
+{
+    TCGv_i64 val;
+    int r;
+
+    if (!dpushm_ok(ctx, a->rs, a->n, 15)) {
+        return false;
+    }
+    val = tcg_temp_new_i64();
+    for (r = a->rs + a->n; r >= a->rs; r--) {
+        tcg_gen_ld_i64(val, tcg_env, dr_offset(r));
+        tcg_gen_subi_i32(cpu_sp, cpu_sp, 8);
+        tcg_gen_qemu_st_i64(val, cpu_sp, 0, MO_64 | mo_endian(ctx));
+    }
+    return true;
+}
+
+static bool trans_DPOPM_d(DisasContext *ctx, arg_DPOPM_d *a)
+{
+    TCGv_i64 val;
+    int r;
+
+    if (!dpushm_ok(ctx, a->rs, a->n, 15)) {
+        return false;
+    }
+    val = tcg_temp_new_i64();
+    for (r = a->rs; r <= a->rs + a->n; r++) {
+        tcg_gen_qemu_ld_i64(val, cpu_sp, 0, MO_64 | mo_endian(ctx));
+        tcg_gen_addi_i32(cpu_sp, cpu_sp, 8);
+        tcg_gen_st_i64(val, tcg_env, dr_offset(r));
+    }
+    return true;
+}
+
+static bool trans_DPUSHM_l(DisasContext *ctx, arg_DPUSHM_l *a)
+{
+    TCGv_i32 val;
+    int r;
+
+    if (!dpushm_ok(ctx, a->rs, a->n, 3)) {
+        return false;
+    }
+    val = tcg_temp_new_i32();
+    for (r = a->rs + a->n; r >= a->rs; r--) {
+        tcg_gen_ld_i32(val, tcg_env, dcr_offset(r));
+        push(ctx, val);
+    }
+    return true;
+}
+
+static bool trans_DPOPM_l(DisasContext *ctx, arg_DPOPM_l *a)
+{
+    TCGv_i32 val;
+    int r;
+
+    if (!dpushm_ok(ctx, a->rs, a->n, 3)) {
+        return false;
+    }
+    val = tcg_temp_new_i32();
+    for (r = a->rs; r <= a->rs + a->n; r++) {
+        pop(ctx, val);
+        gen_helper_set_dcr(tcg_env, tcg_constant_i32(r), val);
+    }
     return true;
 }
 

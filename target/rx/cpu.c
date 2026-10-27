@@ -131,6 +131,23 @@ static void rx_cpu_reset_hold(Object *obj, ResetType type)
      * be the correct setting.
      */
     set_float_ftz_detection(float_ftz_before_rounding, &env->fp_status);
+
+    /*
+     * Double-precision FPU (RXv3 manual 1.10): DPSW resets with DDN = 1 and
+     * DECNT with EHM = 1. Denormals are always flushed, as for the FPSW
+     * (see update_dfpu). Table 1.14: an SNaN operand first, then src2
+     * (the first operand of the softfloat calls); an invalid operation
+     * without NaN operands gives 7fffffffffffffff.
+     */
+    env->dpsw = R_DPSW_DDN_MASK;
+    env->decnt = R_DECNT_EHM_MASK;
+    set_float_rounding_mode(float_round_nearest_even, &env->dfp_status);
+    set_float_exception_flags(0, &env->dfp_status);
+    set_flush_to_zero(1, &env->dfp_status);
+    set_flush_inputs_to_zero(1, &env->dfp_status);
+    set_float_2nan_prop_rule(float_2nan_prop_s_ab, &env->dfp_status);
+    set_float_default_nan_pattern(0b01111111, &env->dfp_status);
+    set_float_ftz_detection(float_ftz_before_rounding, &env->dfp_status);
 }
 
 static ObjectClass *rx_cpu_class_by_name(const char *cpu_model)
