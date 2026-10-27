@@ -421,20 +421,91 @@ void helper_rmpa(CPURXState *env, uint32_t sz)
     env->regs[4] = result_l & 0xffffffff;
 }
 
-void helper_racw(CPURXState *env, uint32_t imm)
+/*
+ * The accumulators are 72 bits wide on RXv2 and later and 64 bits wide on
+ * RXv1; they are kept sign-extended to 128 bits.
+ */
+static Int128 sext128(Int128 v, int bits)
 {
-    int64_t acc;
-    acc = env->acc;
-    acc <<= (imm + 1);
-    acc += 0x0000000080000000LL;
-    if (acc > 0x00007fff00000000LL) {
-        acc = 0x00007fff00000000LL;
-    } else if (acc < -0x800000000000LL) {
-        acc = -0x800000000000LL;
+    return int128_rshift(int128_lshift(v, 128 - bits), 128 - bits);
+}
+
+static int acc_bits(CPURXState *env)
+{
+    return rx_has_feature(env, RX_FEATURE_V2) ? 72 : 64;
+}
+
+static void acc_set(CPURXState *env, uint32_t a, Int128 v)
+{
+    env->acc[a] = sext128(v, acc_bits(env));
+}
+
+/* mul* / emula, mac* / emaca and msb* / emsba with their product */
+void helper_acc_set(CPURXState *env, uint32_t a, int64_t prod)
+{
+    acc_set(env, a, int128_exts64(prod));
+}
+
+void helper_acc_add(CPURXState *env, uint32_t a, int64_t prod)
+{
+    acc_set(env, a, int128_add(env->acc[a], int128_exts64(prod)));
+}
+
+void helper_acc_sub(CPURXState *env, uint32_t a, int64_t prod)
+{
+    acc_set(env, a, int128_sub(env->acc[a], int128_exts64(prod)));
+}
+
+/* mvfacgu / mvfachi / mvfacmi / mvfaclo: bits pos+31..pos of A << shift */
+uint32_t helper_mvfac(CPURXState *env, uint32_t a, uint32_t shift,
+                      uint32_t pos)
+{
+    Int128 tmp = sext128(int128_lshift(env->acc[a], shift), 72);
+
+    return int128_getlo(int128_rshift(tmp, pos));
+}
+
+/*
+ * mvtacgu / mvtachi / mvtaclo: replace bits pos+31..pos of A with val. The
+ * RXv3 manual ORs in the source sign-extended to 72 bits for mvtacgu and
+ * mvtachi, and zero-extended for mvtaclo.
+ */
+void helper_mvtac(CPURXState *env, uint32_t a, uint32_t pos, uint32_t val)
+{
+    Int128 field = int128_lshift(int128_make64(0xffffffff), pos);
+    Int128 src = pos ? int128_exts64((int32_t)val) : int128_make64(val);
+
+    acc_set(env, a, int128_or(int128_and(env->acc[a], int128_not(field)),
+                              int128_lshift(src, pos)));
+}
+
+/*
+ * racw / racl / rdacw / rdacl: shift A left, round (RX_RAC_ROUND) and
+ * saturate to a word or a longword (RX_RAC_LONG) in bits 63..32.
+ */
+void helper_rac(CPURXState *env, uint32_t a, uint32_t shift, uint32_t mode)
+{
+    Int128 tmp, max, min;
+
+    if (mode & RX_RAC_LONG) {
+        max = int128_make64(0x7fffffff00000000ULL);
+        min = int128_exts64(INT64_MIN);
     } else {
-        acc &= 0xffffffff00000000LL;
+        max = int128_make64(0x00007fff00000000ULL);
+        min = int128_exts64(-0x800000000000LL);
     }
-    env->acc = acc;
+    tmp = sext128(int128_lshift(env->acc[a], shift), acc_bits(env));
+    if (mode & RX_RAC_ROUND) {
+        tmp = int128_add(tmp, int128_make64(0x80000000));
+    }
+    if (int128_gt(tmp, max)) {
+        tmp = max;
+    } else if (int128_lt(tmp, min)) {
+        tmp = min;
+    } else {
+        tmp = int128_and(tmp, int128_not(int128_make64(0xffffffff)));
+    }
+    acc_set(env, a, tmp);
 }
 
 void helper_satr(CPURXState *env)

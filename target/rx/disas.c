@@ -100,6 +100,12 @@ static int bdsp_s(DisasContext *ctx, int d)
 }
 
 /* Include the auto-generated decoder.  */
+/* mvfac* #imm: the high bit of the shift is inverted */
+static int mvfac_imm(DisasContext *ctx, int x)
+{
+    return x ^ 2;
+}
+
 #include "decode-insns.c.inc"
 
 static void dump_bytes(DisasContext *ctx)
@@ -1051,68 +1057,60 @@ static bool trans_RMPA(DisasContext *ctx, arg_RMPA *a)
     return true;
 }
 
-/* mulhi rs,rs2 */
-static bool trans_MULHI(DisasContext *ctx, arg_MULHI *a)
-{
-    prt("mulhi\tr%d,r%d", a->rs, a->rs2);
-    return true;
-}
+#define DSP_MUL(name, insn)                                     \
+    static bool trans_##name(DisasContext *ctx, arg_##name * a) \
+    {                                                           \
+        prt(insn "\tr%d, r%d, a%d", a->rs, a->rs2, a->a);       \
+        return true;                                            \
+    }
 
-/* mullo rs,rs2 */
-static bool trans_MULLO(DisasContext *ctx, arg_MULLO *a)
-{
-    prt("mullo\tr%d, r%d", a->rs, a->rs2);
-    return true;
-}
+DSP_MUL(MULHI, "mulhi")
+DSP_MUL(MULLO, "mullo")
+DSP_MUL(MULLH, "mullh")
+DSP_MUL(EMULA, "emula")
+DSP_MUL(MACHI, "machi")
+DSP_MUL(MACLO, "maclo")
+DSP_MUL(MACLH, "maclh")
+DSP_MUL(EMACA, "emaca")
+DSP_MUL(MSBHI, "msbhi")
+DSP_MUL(MSBLO, "msblo")
+DSP_MUL(MSBLH, "msblh")
+DSP_MUL(EMSBA, "emsba")
 
-/* machi rs,rs2 */
-static bool trans_MACHI(DisasContext *ctx, arg_MACHI *a)
-{
-    prt("machi\tr%d, r%d", a->rs, a->rs2);
-    return true;
-}
+#define DSP_MVFAC(name, insn)                                   \
+    static bool trans_##name(DisasContext *ctx, arg_##name * a) \
+    {                                                           \
+        prt(insn "\t#%d, a%d, r%d", a->imm, a->a, a->rd);       \
+        return true;                                            \
+    }
 
-/* maclo rs,rs2 */
-static bool trans_MACLO(DisasContext *ctx, arg_MACLO *a)
-{
-    prt("maclo\tr%d, r%d", a->rs, a->rs2);
-    return true;
-}
+DSP_MVFAC(MVFACHI, "mvfachi")
+DSP_MVFAC(MVFACMI, "mvfacmi")
+DSP_MVFAC(MVFACLO, "mvfaclo")
+DSP_MVFAC(MVFACGU, "mvfacgu")
 
-/* mvfachi rd */
-static bool trans_MVFACHI(DisasContext *ctx, arg_MVFACHI *a)
-{
-    prt("mvfachi\tr%d", a->rd);
-    return true;
-}
+#define DSP_MVTAC(name, insn)                                   \
+    static bool trans_##name(DisasContext *ctx, arg_##name * a) \
+    {                                                           \
+        prt(insn "\tr%d, a%d", a->rs, a->a);                    \
+        return true;                                            \
+    }
 
-/* mvfacmi rd */
-static bool trans_MVFACMI(DisasContext *ctx, arg_MVFACMI *a)
-{
-    prt("mvfacmi\tr%d", a->rd);
-    return true;
-}
+DSP_MVTAC(MVTACHI, "mvtachi")
+DSP_MVTAC(MVTACLO, "mvtaclo")
+DSP_MVTAC(MVTACGU, "mvtacgu")
 
-/* mvtachi rs */
-static bool trans_MVTACHI(DisasContext *ctx, arg_MVTACHI *a)
-{
-    prt("mvtachi\tr%d", a->rs);
-    return true;
-}
+#define DSP_RAC(name, insn)                                     \
+    static bool trans_##name(DisasContext *ctx, arg_##name * a) \
+    {                                                           \
+        prt(insn "\t#%d, a%d", a->imm + 1, a->a);               \
+        return true;                                            \
+    }
 
-/* mvtaclo rs */
-static bool trans_MVTACLO(DisasContext *ctx, arg_MVTACLO *a)
-{
-    prt("mvtaclo\tr%d", a->rs);
-    return true;
-}
-
-/* racw #imm */
-static bool trans_RACW(DisasContext *ctx, arg_RACW *a)
-{
-    prt("racw\t#%d", a->imm + 1);
-    return true;
-}
+DSP_RAC(RACW, "racw")
+DSP_RAC(RACL, "racl")
+DSP_RAC(RDACW, "rdacw")
+DSP_RAC(RDACL, "rdacl")
 
 /* sat rd */
 static bool trans_SAT(DisasContext *ctx, arg_SAT *a)

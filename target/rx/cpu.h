@@ -20,6 +20,7 @@
 #define RX_CPU_H
 
 #include "qemu/bitops.h"
+#include "qemu/int128.h"
 #include "hw/core/registerfields.h"
 #include "cpu-qom.h"
 
@@ -80,6 +81,12 @@ enum {
     RX_FEATURE_DFPU = 1 << 4,   /* double-precision FPU (RXv3 and later) */
 };
 
+/* Modes of the rac helper (RACW, RACL, RDACW, RDACL) */
+enum {
+    RX_RAC_ROUND = 1 << 0,      /* add 80000000h first (RACW, RACL) */
+    RX_RAC_LONG  = 1 << 1,      /* saturate to a longword (RACL, RDACL) */
+};
+
 typedef struct CPUArchState {
     /* CPU registers */
     uint32_t regs[NUM_REGS];    /* general registers */
@@ -99,7 +106,7 @@ typedef struct CPUArchState {
     uint32_t intb;              /* interrupt vector */
     uint32_t fintv;
     uint32_t fpsw;
-    uint64_t acc;
+    Int128 acc[2];              /* accumulators A0 and A1, sign-extended */
     uint32_t extb;              /* exception table register (RXv2) */
     uint32_t li;                /* LI flag of MOVLI / MOVCO (RXv2) */
 

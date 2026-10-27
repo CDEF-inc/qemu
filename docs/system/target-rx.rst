@@ -33,7 +33,11 @@ RXv2 and later cores have the exception table register (EXTB), which
 moves the fixed vectors (all but reset), and the RXv2 instructions
 ``movli``/``movco``, ``stz``/``stnz`` with a register source, the
 three-operand ``fadd``/``fsub``/``fmul``, ``fsqrt``, ``ftou`` and ``utof``.
-The DSP instructions of RXv2 are not implemented yet.
+RXv2 and later cores also have the second accumulator A1, 72-bit
+accumulators and the RXv2 DSP instructions (``emaca``, ``emsba``,
+``emula``, ``maclh``, ``msbhi``, ``msblh``, ``msblo``, ``mullh``,
+``mvfacgu``, ``mvfaclo``, ``mvtacgu``, ``racl``, ``rdacl``, ``rdacw``, and
+the A1 and shift forms of the RXv1 ones).
 
 Example of ``qemu-system-rx`` usage for RX is shown below:
 

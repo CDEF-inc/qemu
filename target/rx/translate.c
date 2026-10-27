@@ -69,7 +69,6 @@ static TCGv_i32 cpu_psw_o, cpu_psw_s, cpu_psw_z, cpu_psw_c;
 static TCGv_i32 cpu_psw_i, cpu_psw_pm, cpu_psw_u, cpu_psw_ipl;
 static TCGv_i32 cpu_usp, cpu_fpsw, cpu_bpsw, cpu_bpc, cpu_isp;
 static TCGv_i32 cpu_fintv, cpu_intb, cpu_pc, cpu_extb, cpu_li;
-static TCGv_i64 cpu_acc;
 
 #define cpu_sp cpu_regs[0]
 
@@ -136,6 +135,12 @@ static int bdsp_s(DisasContext *ctx, int d)
 }
 
 /* Whether the core has all of the RX_FEATURE_* bits in @features */
+/* mvfac* #imm: the high bit of the shift is inverted */
+static int mvfac_imm(DisasContext *ctx, int x)
+{
+    return x ^ 2;
+}
+
 static bool has_feature(DisasContext *ctx, uint32_t features)
 {
     return (ctx->features & features) == features;
@@ -1785,110 +1790,131 @@ static bool trans_RMPA(DisasContext *ctx, arg_RMPA *a)
     return true;
 }
 
-static void rx_mul64hi(TCGv_i64 ret, int rs, int rs2)
+/*
+ * DSP instructions. RXv1 has the A0 forms of mulhi / mullo / machi /
+ * maclo, mvtachi / mvtaclo, mvfachi / mvfacmi #0 and racw; RXv2 adds A1,
+ * the shift of mvfac* and the other instructions.
+ */
+static bool dsp_allowed(DisasContext *ctx, bool v2_only, int acc)
 {
-    TCGv_i64 tmp0, tmp1;
-    tmp0 = tcg_temp_new_i64();
-    tmp1 = tcg_temp_new_i64();
-    tcg_gen_ext_i32_i64(tmp0, cpu_regs[rs]);
-    tcg_gen_sari_i64(tmp0, tmp0, 16);
-    tcg_gen_ext_i32_i64(tmp1, cpu_regs[rs2]);
-    tcg_gen_sari_i64(tmp1, tmp1, 16);
-    tcg_gen_mul_i64(ret, tmp0, tmp1);
+    return has_feature(ctx, RX_FEATURE_V2) || (!v2_only && acc == 0);
+}
+
+enum {
+    DSP_HI,     /* upper 16 bits of both */
+    DSP_LO,     /* lower 16 bits of both */
+    DSP_LH,     /* lower 16 bits of rs, upper 16 bits of rs2 */
+    DSP_E,      /* all 32 bits */
+};
+
+/* The product that mul* / mac* / msb* / em*a apply to the accumulator */
+static TCGv_i64 dsp_product(int sel, int rs, int rs2)
+{
+    TCGv_i32 t0 = tcg_temp_new_i32();
+    TCGv_i32 t1 = tcg_temp_new_i32();
+    TCGv_i64 ret = tcg_temp_new_i64();
+
+    switch (sel) {
+    case DSP_HI:
+        tcg_gen_sari_i32(t0, cpu_regs[rs], 16);
+        tcg_gen_sari_i32(t1, cpu_regs[rs2], 16);
+        break;
+    case DSP_LO:
+        tcg_gen_ext16s_i32(t0, cpu_regs[rs]);
+        tcg_gen_ext16s_i32(t1, cpu_regs[rs2]);
+        break;
+    case DSP_LH:
+        tcg_gen_ext16s_i32(t0, cpu_regs[rs]);
+        tcg_gen_sari_i32(t1, cpu_regs[rs2], 16);
+        break;
+    default:
+        /* 32 x 32 bits, not shifted */
+        tcg_gen_muls2_i32(t0, t1, cpu_regs[rs], cpu_regs[rs2]);
+        tcg_gen_concat_i32_i64(ret, t0, t1);
+        return ret;
+    }
+    /* 16 x 16 bits, placed at bit 16 */
+    tcg_gen_mul_i32(t0, t0, t1);
+    tcg_gen_ext_i32_i64(ret, t0);
     tcg_gen_shli_i64(ret, ret, 16);
+    return ret;
 }
 
-static void rx_mul64lo(TCGv_i64 ret, int rs, int rs2)
-{
-    TCGv_i64 tmp0, tmp1;
-    tmp0 = tcg_temp_new_i64();
-    tmp1 = tcg_temp_new_i64();
-    tcg_gen_ext_i32_i64(tmp0, cpu_regs[rs]);
-    tcg_gen_ext16s_i64(tmp0, tmp0);
-    tcg_gen_ext_i32_i64(tmp1, cpu_regs[rs2]);
-    tcg_gen_ext16s_i64(tmp1, tmp1);
-    tcg_gen_mul_i64(ret, tmp0, tmp1);
-    tcg_gen_shli_i64(ret, ret, 16);
-}
+#define DSP_MUL(name, sel, op, v2_only)                                 \
+    static bool trans_##name(DisasContext *ctx, arg_##name * a)         \
+    {                                                                   \
+        if (!dsp_allowed(ctx, v2_only, a->a)) {                         \
+            return false;                                               \
+        }                                                               \
+        gen_helper_acc_##op(tcg_env, tcg_constant_i32(a->a),            \
+                            dsp_product(sel, a->rs, a->rs2));           \
+        return true;                                                    \
+    }
 
-/* mulhi rs,rs2 */
-static bool trans_MULHI(DisasContext *ctx, arg_MULHI *a)
-{
-    rx_mul64hi(cpu_acc, a->rs, a->rs2);
-    return true;
-}
+DSP_MUL(MULHI, DSP_HI, set, false)
+DSP_MUL(MULLO, DSP_LO, set, false)
+DSP_MUL(MULLH, DSP_LH, set, true)
+DSP_MUL(EMULA, DSP_E, set, true)
+DSP_MUL(MACHI, DSP_HI, add, false)
+DSP_MUL(MACLO, DSP_LO, add, false)
+DSP_MUL(MACLH, DSP_LH, add, true)
+DSP_MUL(EMACA, DSP_E, add, true)
+DSP_MUL(MSBHI, DSP_HI, sub, true)
+DSP_MUL(MSBLO, DSP_LO, sub, true)
+DSP_MUL(MSBLH, DSP_LH, sub, true)
+DSP_MUL(EMSBA, DSP_E, sub, true)
 
-/* mullo rs,rs2 */
-static bool trans_MULLO(DisasContext *ctx, arg_MULLO *a)
-{
-    rx_mul64lo(cpu_acc, a->rs, a->rs2);
-    return true;
-}
+/* mvfac* #imm, a, rd: bits pos+31..pos of a << imm (imm is 0 to 2) */
+#define DSP_MVFAC(name, pos, v2_only)                                   \
+    static bool trans_##name(DisasContext *ctx, arg_##name * a)         \
+    {                                                                   \
+        if (a->imm == 3 ||                                              \
+            !dsp_allowed(ctx, v2_only || a->imm != 0, a->a)) {         \
+            return false;                                               \
+        }                                                               \
+        gen_helper_mvfac(cpu_regs[a->rd], tcg_env,                      \
+                         tcg_constant_i32(a->a), tcg_constant_i32(a->imm), \
+                         tcg_constant_i32(pos));                        \
+        return true;                                                    \
+    }
 
-/* machi rs,rs2 */
-static bool trans_MACHI(DisasContext *ctx, arg_MACHI *a)
-{
-    TCGv_i64 tmp;
-    tmp = tcg_temp_new_i64();
-    rx_mul64hi(tmp, a->rs, a->rs2);
-    tcg_gen_add_i64(cpu_acc, cpu_acc, tmp);
-    return true;
-}
+DSP_MVFAC(MVFACHI, 32, false)
+DSP_MVFAC(MVFACMI, 16, false)
+DSP_MVFAC(MVFACLO, 0, true)
+DSP_MVFAC(MVFACGU, 64, true)
 
-/* maclo rs,rs2 */
-static bool trans_MACLO(DisasContext *ctx, arg_MACLO *a)
-{
-    TCGv_i64 tmp;
-    tmp = tcg_temp_new_i64();
-    rx_mul64lo(tmp, a->rs, a->rs2);
-    tcg_gen_add_i64(cpu_acc, cpu_acc, tmp);
-    return true;
-}
+/* mvtac* rs, a: bits pos+31..pos of a */
+#define DSP_MVTAC(name, pos, v2_only)                                   \
+    static bool trans_##name(DisasContext *ctx, arg_##name * a)         \
+    {                                                                   \
+        if (!dsp_allowed(ctx, v2_only, a->a)) {                         \
+            return false;                                               \
+        }                                                               \
+        gen_helper_mvtac(tcg_env, tcg_constant_i32(a->a),               \
+                         tcg_constant_i32(pos), cpu_regs[a->rs]);       \
+        return true;                                                    \
+    }
 
-/* mvfachi rd */
-static bool trans_MVFACHI(DisasContext *ctx, arg_MVFACHI *a)
-{
-    tcg_gen_extrh_i64_i32(cpu_regs[a->rd], cpu_acc);
-    return true;
-}
+DSP_MVTAC(MVTACHI, 32, false)
+DSP_MVTAC(MVTACLO, 0, false)
+DSP_MVTAC(MVTACGU, 64, true)
 
-/* mvfacmi rd */
-static bool trans_MVFACMI(DisasContext *ctx, arg_MVFACMI *a)
-{
-    TCGv_i64 rd64;
-    rd64 = tcg_temp_new_i64();
-    tcg_gen_extract_i64(rd64, cpu_acc, 16, 32);
-    tcg_gen_extrl_i64_i32(cpu_regs[a->rd], rd64);
-    return true;
-}
+/* racw / racl / rdacw / rdacl #imm, a (imm is 1 or 2) */
+#define DSP_RAC(name, mode, v2_only)                                    \
+    static bool trans_##name(DisasContext *ctx, arg_##name * a)         \
+    {                                                                   \
+        if (!dsp_allowed(ctx, v2_only, a->a)) {                         \
+            return false;                                               \
+        }                                                               \
+        gen_helper_rac(tcg_env, tcg_constant_i32(a->a),                 \
+                       tcg_constant_i32(a->imm + 1), tcg_constant_i32(mode)); \
+        return true;                                                    \
+    }
 
-/* mvtachi rs */
-static bool trans_MVTACHI(DisasContext *ctx, arg_MVTACHI *a)
-{
-    TCGv_i64 rs64;
-    rs64 = tcg_temp_new_i64();
-    tcg_gen_extu_i32_i64(rs64, cpu_regs[a->rs]);
-    tcg_gen_deposit_i64(cpu_acc, cpu_acc, rs64, 32, 32);
-    return true;
-}
-
-/* mvtaclo rs */
-static bool trans_MVTACLO(DisasContext *ctx, arg_MVTACLO *a)
-{
-    TCGv_i64 rs64;
-    rs64 = tcg_temp_new_i64();
-    tcg_gen_extu_i32_i64(rs64, cpu_regs[a->rs]);
-    tcg_gen_deposit_i64(cpu_acc, cpu_acc, rs64, 0, 32);
-    return true;
-}
-
-/* racw #imm */
-static bool trans_RACW(DisasContext *ctx, arg_RACW *a)
-{
-    TCGv_i32 imm = tcg_constant_i32(a->imm + 1);
-    gen_helper_racw(tcg_env, imm);
-    return true;
-}
+DSP_RAC(RACW, RX_RAC_ROUND, false)
+DSP_RAC(RACL, RX_RAC_ROUND | RX_RAC_LONG, true)
+DSP_RAC(RDACW, 0, true)
+DSP_RAC(RDACL, RX_RAC_LONG, true)
 
 /* sat rd */
 static bool trans_SAT(DisasContext *ctx, arg_SAT *a)
@@ -2444,6 +2470,4 @@ void rx_translate_init(void)
     ALLOC_REGISTER(isp, "ISP");
     ALLOC_REGISTER(fintv, "FINTV");
     ALLOC_REGISTER(intb, "INTB");
-    cpu_acc = tcg_global_mem_new_i64(tcg_env,
-                                     offsetof(CPURXState, acc), "ACC");
 }

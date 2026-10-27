@@ -316,10 +316,64 @@ JMP		0111 1111 0000 rs:4			&jreg
 # JSR rs
 JSR		0111 1111 0001 rs:4			&jreg
 
-# MACHI rs, rs2
-MACHI		1111 1101 0000 0100 rs:4 rs2:4
-# MACLO rs, rs2
-MACLO		1111 1101 0000 0101 rs:4 rs2:4
+# DSP instructions; the A1 forms and the instructions marked (RXv2) need
+# RXv2, RXv1 has the A0 forms (with mvfac* #0)
+&dsp		a rs rs2
+&mvfac		a imm rd
+&mvtac		a rs
+&rac		a imm
+%b3_mvfac_imm	16:1 14:1 !function=mvfac_imm
+@b3_dsp		.... .... .... a:1 ... rs:4 rs2:4	&dsp
+
+# MULHI rs, rs2, a
+MULHI		1111 1101 0000 .000 .... ....		@b3_dsp
+# MULLO rs, rs2, a
+MULLO		1111 1101 0000 .001 .... ....		@b3_dsp
+# MULLH rs, rs2, a (RXv2)
+MULLH		1111 1101 0000 .010 .... ....		@b3_dsp
+# EMULA rs, rs2, a (RXv2)
+EMULA		1111 1101 0000 .011 .... ....		@b3_dsp
+# MACHI rs, rs2, a
+MACHI		1111 1101 0000 .100 .... ....		@b3_dsp
+# MACLO rs, rs2, a
+MACLO		1111 1101 0000 .101 .... ....		@b3_dsp
+# MACLH rs, rs2, a (RXv2)
+MACLH		1111 1101 0000 .110 .... ....		@b3_dsp
+# EMACA rs, rs2, a (RXv2)
+EMACA		1111 1101 0000 .111 .... ....		@b3_dsp
+# MSBHI rs, rs2, a (RXv2)
+MSBHI		1111 1101 0100 .100 .... ....		@b3_dsp
+# MSBLO rs, rs2, a (RXv2)
+MSBLO		1111 1101 0100 .101 .... ....		@b3_dsp
+# MSBLH rs, rs2, a (RXv2)
+MSBLH		1111 1101 0100 .110 .... ....		@b3_dsp
+# EMSBA rs, rs2, a (RXv2)
+EMSBA		1111 1101 0100 .111 .... ....		@b3_dsp
+
+# MVFACHI #imm, a, rd
+MVFACHI		1111 1101 0001 111. a:1 . 00 rd:4	&mvfac imm=%b3_mvfac_imm
+# MVFACMI #imm, a, rd
+MVFACMI		1111 1101 0001 111. a:1 . 10 rd:4	&mvfac imm=%b3_mvfac_imm
+# MVFACLO #imm, a, rd (RXv2)
+MVFACLO		1111 1101 0001 111. a:1 . 01 rd:4	&mvfac imm=%b3_mvfac_imm
+# MVFACGU #imm, a, rd (RXv2)
+MVFACGU		1111 1101 0001 111. a:1 . 11 rd:4	&mvfac imm=%b3_mvfac_imm
+
+# MVTACHI rs, a
+MVTACHI		1111 1101 0001 0111 a:1 000 rs:4	&mvtac
+# MVTACLO rs, a
+MVTACLO		1111 1101 0001 0111 a:1 001 rs:4	&mvtac
+# MVTACGU rs, a (RXv2)
+MVTACGU		1111 1101 0001 0111 a:1 011 rs:4	&mvtac
+
+# RACW #imm, a
+RACW		1111 1101 0001 1000 a:1 00 imm:1 0000	&rac
+# RDACW #imm, a (RXv2)
+RDACW		1111 1101 0001 1000 a:1 10 imm:1 0000	&rac
+# RACL #imm, a (RXv2)
+RACL		1111 1101 0001 1001 a:1 00 imm:1 0000	&rac
+# RDACL #imm, a (RXv2)
+RDACL		1111 1101 0001 1001 a:1 10 imm:1 0000	&rac
 
 # MAX #imm, rd
 MAX_ir		1111 1101 0111 ..00 0100 ....		@b3_rd_li
@@ -430,23 +484,8 @@ MUL_mr		0000 0110 ..00 11.. .... ....		@b3_rd_ld
 # MOV rs, rs2, rd
 MUL_rrr		1111 1111 0011 .... .... ....		@b3_rd_rs_rs2
 
-# MULHI rs, rs2
-MULHI		1111 1101 0000 0000 rs:4 rs2:4
-# MULLO rs, rs2
-MULLO		1111 1101 0000 0001 rs:4 rs2:4
-
-# MVFACHI rd
-MVFACHI		1111 1101 0001 1111 0000 rd:4
-# MVFACMI rd
-MVFACMI		1111 1101 0001 1111 0010 rd:4
-
 # MVFC cr, rd
 MVFC		1111 1101 0110 1010 cr:4 rd:4
-
-# MVTACHI rs
-MVTACHI		1111 1101 0001 0111 0000 rs:4
-# MVTACLO rs
-MVTACLO		1111 1101 0001 0111 0001 rs:4
 
 # MVTC #imm, cr
 MVTC_i		1111 1101 0111 ..11 0000 cr:4		imm=%b3_li_10
@@ -498,8 +537,6 @@ PUSHC		0111 1110 1100 cr:4
 # PUSHM rs-rs2
 PUSHM		0110 1110 rs:4 rs2:4
 
-# RACW #imm
-RACW		1111 1101 0001 1000 000 imm:1 0000
 
 # REVL rs,rd
 REVL		1111 1101 0110 0111 .... ....		@b3_rd_rs
