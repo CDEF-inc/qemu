@@ -100,6 +100,8 @@ typedef struct CPUArchState {
     uint32_t fintv;
     uint32_t fpsw;
     uint64_t acc;
+    uint32_t extb;              /* exception table register (RXv2) */
+    uint32_t li;                /* LI flag of MOVLI / MOVCO (RXv2) */
 
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;

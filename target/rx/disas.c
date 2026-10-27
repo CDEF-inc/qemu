@@ -285,6 +285,9 @@ static bool trans_MOV_mm(DisasContext *ctx, arg_MOV_mm *a)
 /* mov.[bwl] rs,[-rd] */
 static bool trans_MOV_rp(DisasContext *ctx, arg_MOV_rp *a)
 {
+    if (a->sz == 3) {
+        return false;
+    }
     if (a->ad) {
         prt("mov.%c\tr%d, [-r%d]", size[a->sz], a->rs, a->rd);
     } else {
@@ -297,6 +300,9 @@ static bool trans_MOV_rp(DisasContext *ctx, arg_MOV_rp *a)
 /* mov.[bwl] [-rd],rs */
 static bool trans_MOV_pr(DisasContext *ctx, arg_MOV_pr *a)
 {
+    if (a->sz == 3) {
+        return false;
+    }
     if (a->ad) {
         prt("mov.%c\t[-r%d], r%d", size[a->sz], a->rd, a->rs);
     } else {
@@ -419,6 +425,34 @@ static bool trans_STZ(DisasContext *ctx, arg_STZ *a)
 static bool trans_STNZ(DisasContext *ctx, arg_STNZ *a)
 {
     prt_ir(ctx, "stnz", a->imm, a->rd);
+    return true;
+}
+
+/* stz rs,rd */
+static bool trans_STZ_rr(DisasContext *ctx, arg_STZ_rr *a)
+{
+    prt("stz\tr%d, r%d", a->rs, a->rd);
+    return true;
+}
+
+/* stnz rs,rd */
+static bool trans_STNZ_rr(DisasContext *ctx, arg_STNZ_rr *a)
+{
+    prt("stnz\tr%d, r%d", a->rs, a->rd);
+    return true;
+}
+
+/* movli [rs],rd */
+static bool trans_MOVLI(DisasContext *ctx, arg_MOVLI *a)
+{
+    prt("movli\t[r%d], r%d", a->rs, a->rd);
+    return true;
+}
+
+/* movco rs,[rd] */
+static bool trans_MOVCO(DisasContext *ctx, arg_MOVCO *a)
+{
+    prt("movco\tr%d, [r%d]", a->rs, a->rd);
     return true;
 }
 
@@ -1190,6 +1224,51 @@ static bool trans_ROUND(DisasContext *ctx, arg_ROUND *a)
 static bool trans_ITOF(DisasContext *ctx, arg_ITOF *a)
 {
     prt_ldmi(ctx, "itof", a->ld, RX_IM_LONG, a->rs, a->rd);
+    return true;
+}
+
+/* utof rs, rd */
+/* utof dsp[rs], rd */
+static bool trans_UTOF(DisasContext *ctx, arg_UTOF *a)
+{
+    prt_ldmi(ctx, "utof", a->ld, a->mi, a->rs, a->rd);
+    return true;
+}
+
+/* fsqrt rs, rd */
+/* fsqrt dsp[rs], rd */
+static bool trans_FSQRT(DisasContext *ctx, arg_FSQRT *a)
+{
+    prt_ldmi(ctx, "fsqrt", a->ld, RX_IM_LONG, a->rs, a->rd);
+    return true;
+}
+
+/* ftou rs, rd */
+/* ftou dsp[rs], rd */
+static bool trans_FTOU(DisasContext *ctx, arg_FTOU *a)
+{
+    prt_ldmi(ctx, "ftou", a->ld, RX_IM_LONG, a->rs, a->rd);
+    return true;
+}
+
+/* fadd rs, rs2, rd */
+static bool trans_FADD_rrr(DisasContext *ctx, arg_FADD_rrr *a)
+{
+    prt("fadd\tr%d, r%d, r%d", a->rs, a->rs2, a->rd);
+    return true;
+}
+
+/* fsub rs, rs2, rd */
+static bool trans_FSUB_rrr(DisasContext *ctx, arg_FSUB_rrr *a)
+{
+    prt("fsub\tr%d, r%d, r%d", a->rs, a->rs2, a->rd);
+    return true;
+}
+
+/* fmul rs, rs2, rd */
+static bool trans_FMUL_rrr(DisasContext *ctx, arg_FMUL_rrr *a)
+{
+    prt("fmul\tr%d, r%d, r%d", a->rs, a->rs2, a->rd);
     return true;
 }
 

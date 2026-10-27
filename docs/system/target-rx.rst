@@ -29,6 +29,12 @@ The units can be switched with the ``fpu`` and ``dfpu`` properties, for
 example ``-cpu rxv3,dfpu=off``. Instructions of an ISA or unit the core
 does not have raise the undefined instruction exception.
 
+RXv2 and later cores have the exception table register (EXTB), which
+moves the fixed vectors (all but reset), and the RXv2 instructions
+``movli``/``movco``, ``stz``/``stnz`` with a register source, the
+three-operand ``fadd``/``fsub``/``fmul``, ``fsqrt``, ``ftou`` and ``utof``.
+The DSP instructions of RXv2 are not implemented yet.
+
 Example of ``qemu-system-rx`` usage for RX is shown below:
 
 Download ``<u-boot_image_file>`` from

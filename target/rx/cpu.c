@@ -103,7 +103,9 @@ static void rx_cpu_reset_hold(Object *obj, ResetType type)
     }
     rx_cpu_unpack_psw(env, 0, 1);
     env->regs[0] = env->isp = env->usp = 0;
-    env->fpsw = 0;
+    env->extb = 0xffffff80;
+    env->fpsw = R_FPSW_DN_MASK;
+    set_float_exception_flags(0, &env->fp_status);
     set_flush_to_zero(1, &env->fp_status);
     set_flush_inputs_to_zero(1, &env->fp_status);
     /*
@@ -113,8 +115,12 @@ static void rx_cpu_reset_hold(Object *obj, ResetType type)
      * then prefer dest over source", which is float_2nan_prop_s_ab.
      */
     set_float_2nan_prop_rule(float_2nan_prop_x87, &env->fp_status);
-    /* Default NaN value: sign bit clear, set frac msb */
-    set_float_default_nan_pattern(0b01000000, &env->fp_status);
+    /*
+     * Default NaN value: 7fffffff (sign bit clear, all fraction bits set),
+     * the result of an invalid operation without NaN operands
+     * ("RX Family RXv3 Instruction Set Architecture" table 1.7).
+     */
+    set_float_default_nan_pattern(0b01111111, &env->fp_status);
     /*
      * TODO: "RX Family RXv1 Instruction Set Architecture" is not 100% clear
      * on whether flush-to-zero should happen before or after rounding, but

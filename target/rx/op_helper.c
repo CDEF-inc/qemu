@@ -74,16 +74,32 @@ static void update_fpsw(CPURXState *env, float32 ret, uintptr_t retaddr)
 {
     int xcpt, cause, enable;
 
-    env->psw_z = ret & ~(1 << 31); /* mask sign bit */
-    env->psw_s = ret;
-
     xcpt = get_float_exception_flags(&env->fp_status);
+    set_float_exception_flags(0, &env->fp_status);
 
     /* Clear the cause entries */
     env->fpsw = FIELD_DP32(env->fpsw, FPSW, CAUSE, 0);
 
     /* set FPSW */
     if (unlikely(xcpt)) {
+        /*
+         * Denormals are always flushed. With DN = 1 that is the result: a
+         * flushed result is an underflow (without inexact). With DN = 0 a
+         * denormal operand or an underflow is unimplemented processing,
+         * which cannot be masked and leaves the destination unchanged.
+         */
+        if (xcpt & (float_flag_input_denormal_flushed
+                    | float_flag_output_denormal_flushed)
+            && !FIELD_EX32(env->fpsw, FPSW, DN)) {
+            env->fpsw = FIELD_DP32(env->fpsw, FPSW, CE, 1);
+            raise_exception(env, 25, retaddr);
+        }
+        if (xcpt & float_flag_output_denormal_flushed) {
+            xcpt |= float_flag_underflow;
+        }
+        if (xcpt & float_flag_underflow) {
+            xcpt &= ~float_flag_inexact;
+        }
         if (xcpt & float_flag_invalid) {
             SET_FPSW(V);
         }
@@ -99,25 +115,25 @@ static void update_fpsw(CPURXState *env, float32 ret, uintptr_t retaddr)
         if (xcpt & float_flag_inexact) {
             SET_FPSW(X);
         }
-        if ((xcpt & (float_flag_input_denormal_flushed
-                     | float_flag_output_denormal_flushed))
-            && !FIELD_EX32(env->fpsw, FPSW, DN)) {
-            env->fpsw = FIELD_DP32(env->fpsw, FPSW, CE, 1);
-        }
 
         /* update FPSW_FLAG_S */
         if (FIELD_EX32(env->fpsw, FPSW, FLAGS) != 0) {
             env->fpsw = FIELD_DP32(env->fpsw, FPSW, FS, 1);
         }
 
-        /* Generate an exception if enabled */
+        /*
+         * Generate an exception if enabled; the destination and the
+         * Z and S flags are left unchanged.
+         */
         cause = FIELD_EX32(env->fpsw, FPSW, CAUSE);
         enable = FIELD_EX32(env->fpsw, FPSW, ENABLE);
-        enable |= 1 << 5; /* CE always enabled */
         if (cause & enable) {
-            raise_exception(env, 21, retaddr);
+            raise_exception(env, 25, retaddr);
         }
     }
+
+    env->psw_z = ret & ~(1 << 31); /* mask sign bit */
+    env->psw_s = ret;
 }
 
 void helper_set_fpsw(CPURXState *env, uint32_t val)
@@ -132,7 +148,7 @@ void helper_set_fpsw(CPURXState *env, uint32_t val)
     fpsw |= 0x7fffff03;
     val &= ~0x80000000;
     fpsw &= val;
-    FIELD_DP32(fpsw, FPSW, FS, FIELD_EX32(fpsw, FPSW, FLAGS) != 0);
+    fpsw = FIELD_DP32(fpsw, FPSW, FS, FIELD_EX32(fpsw, FPSW, FLAGS) != 0);
     env->fpsw = fpsw;
     set_float_rounding_mode(roundmode[FIELD_EX32(env->fpsw, FPSW, RM)],
                             &env->fp_status);
@@ -172,10 +188,22 @@ void helper_fcmp(CPURXState *env, float32 t0, float32 t1)
     }
 }
 
+/*
+ * Integer conversion of a NaN is an invalid operation whose result
+ * follows the sign of the NaN (RXv3 manual table 1.6).
+ */
+static uint32_t nan_to_int(float32 t0, uint32_t pos, uint32_t neg)
+{
+    return float32_is_neg(t0) ? neg : pos;
+}
+
 uint32_t helper_ftoi(CPURXState *env, float32 t0)
 {
     uint32_t ret;
     ret = float32_to_int32_round_to_zero(t0, &env->fp_status);
+    if (float32_is_any_nan(t0)) {
+        ret = nan_to_int(t0, INT32_MAX, INT32_MIN);
+    }
     update_fpsw(env, ret, GETPC());
     return ret;
 }
@@ -184,6 +212,36 @@ uint32_t helper_round(CPURXState *env, float32 t0)
 {
     uint32_t ret;
     ret = float32_to_int32(t0, &env->fp_status);
+    if (float32_is_any_nan(t0)) {
+        ret = nan_to_int(t0, INT32_MAX, INT32_MIN);
+    }
+    update_fpsw(env, ret, GETPC());
+    return ret;
+}
+
+uint32_t helper_ftou(CPURXState *env, float32 t0)
+{
+    uint32_t ret;
+    ret = float32_to_uint32_round_to_zero(t0, &env->fp_status);
+    if (float32_is_any_nan(t0)) {
+        ret = nan_to_int(t0, UINT32_MAX, 0);
+    }
+    update_fpsw(env, ret, GETPC());
+    return ret;
+}
+
+float32 helper_fsqrt(CPURXState *env, float32 t0)
+{
+    float32 ret;
+    ret = float32_sqrt(t0, &env->fp_status);
+    update_fpsw(env, ret, GETPC());
+    return ret;
+}
+
+float32 helper_utof(CPURXState *env, uint32_t t0)
+{
+    float32 ret;
+    ret = uint32_to_float32(t0, &env->fp_status);
     update_fpsw(env, ret, GETPC());
     return ret;
 }
