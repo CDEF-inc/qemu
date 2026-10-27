@@ -543,17 +543,32 @@ void helper_utod(CPURXState *env, uint32_t rd, uint32_t val, uint32_t pc)
 
 /*
  * The control registers DCR0-DCR3: DPSW, DCMR, DECNT, DEPC. dpopm writes
- * them as they are; mvtdc can only clear the cause flags of the DPSW and
- * cannot write the DEPC (read-only).
+ * them; mvtdc cannot write the DEPC (read-only).
  */
 #define DPSW_WRITABLE   (R_DPSW_DRM_MASK | R_DPSW_DDN_MASK | \
                          R_DPSW_ENABLE_MASK | (0x1f << R_DPSW_FLAGS_SHIFT))
+
+/*
+ * A DPSW write by mvtdc or dpopm can only clear the cause flags (the
+ * manual says so for mvtdc; an RX72M does the same for dpopm), and does
+ * nothing while DECNT.EHM and EHS are set: the DPSW "is not updated"
+ * then, not by mvtdc either (measured on the RX72M).
+ */
+static void write_dpsw(CPURXState *env, uint32_t val)
+{
+    if (FIELD_EX32(env->decnt, DECNT, EHM) &&
+        FIELD_EX32(env->decnt, DECNT, EHS)) {
+        return;
+    }
+    set_dpsw(env, (val & DPSW_WRITABLE) |
+                  (val & env->dpsw & R_DPSW_CAUSE_MASK));
+}
 
 void helper_set_dcr(CPURXState *env, uint32_t cr, uint32_t val)
 {
     switch (cr) {
     case 0:
-        set_dpsw(env, val & (DPSW_WRITABLE | R_DPSW_CAUSE_MASK));
+        write_dpsw(env, val);
         break;
     case 1:
         env->dcmr = val & 1;
@@ -570,10 +585,6 @@ void helper_set_dcr(CPURXState *env, uint32_t cr, uint32_t val)
 void helper_mvtdc(CPURXState *env, uint32_t cr, uint32_t val)
 {
     switch (cr) {
-    case 0:
-        set_dpsw(env, (val & DPSW_WRITABLE) |
-                      (val & env->dpsw & R_DPSW_CAUSE_MASK));
-        break;
     case 3:
         qemu_log_mask(LOG_GUEST_ERROR, "mvtdc: DEPC is read-only\n");
         break;
