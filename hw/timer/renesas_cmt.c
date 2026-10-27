@@ -51,43 +51,81 @@ REG16(CMCR, 0)
 REG16(CMCNT, 2)
 REG16(CMCOR, 4)
 
-static void update_events(RCMTState *cmt, int ch)
-{
-    int64_t next_time;
+/*
+ * While a channel counts, cmcnt[ch] is the counter value at the virtual
+ * time tick[ch]; the counter advances once every div PCLK cycles. A compare
+ * match comes on the count after CMCNT reaches CMCOR, which clears CMCNT:
+ * every CMCOR + 1 counts (as on an RX72M). tick[ch] only moves when the
+ * channel starts or CMCNT, CMCOR or CKS is written, so that compare matches
+ * and the counter stay in step with other channels on the same clock.
+ */
 
-    if ((cmt->cmstr & (1 << ch)) == 0) {
+/* PCLK cycles per count: CKS 0..3 -> 8, 32, 128, 512 */
+static uint64_t cmt_div(RCMTState *cmt, int ch)
+{
+    return 1 << (3 + FIELD_EX16(cmt->cmcr[ch], CMCR, CKS) * 2);
+}
+
+static bool cmt_running(RCMTState *cmt, int ch)
+{
+    return cmt->cmstr & (1 << ch);
+}
+
+/* Counts from cmcnt[ch] to the next compare match: 1 to 0x10000 */
+static uint64_t cmt_counts_to_match(RCMTState *cmt, int ch)
+{
+    return ((cmt->cmcor[ch] - cmt->cmcnt[ch]) & 0xffff) + 1;
+}
+
+/* Counts since tick[ch] at virtual time now */
+static uint64_t cmt_counts(RCMTState *cmt, int ch, int64_t now)
+{
+    if (!cmt_running(cmt, ch) || now <= cmt->tick[ch]) {
+        return 0;
+    }
+    return muldiv64(now - cmt->tick[ch], cmt->input_freq,
+                    NANOSECONDS_PER_SECOND) / cmt_div(cmt, ch);
+}
+
+/* The counter value at virtual time now */
+static uint16_t cmt_count(RCMTState *cmt, int ch, int64_t now)
+{
+    uint64_t counts = cmt_counts(cmt, ch, now);
+    uint64_t to_match = cmt_counts_to_match(cmt, ch);
+
+    if (counts < to_match) {
+        return cmt->cmcnt[ch] + counts;
+    }
+    return (counts - to_match) % (cmt->cmcor[ch] + 1);
+}
+
+/* Make cmcnt[ch] the value at now and count from there. */
+static void cmt_sync(RCMTState *cmt, int ch, int64_t now)
+{
+    cmt->cmcnt[ch] = cmt_count(cmt, ch, now);
+    cmt->tick[ch] = now;
+}
+
+/* Schedule the first compare match after virtual time now. */
+static void update_events(RCMTState *cmt, int ch, int64_t now)
+{
+    uint64_t counts, to_match, period, next;
+
+    if (!cmt_running(cmt, ch)) {
         /* count disable, so not happened next event. */
         return;
     }
-    next_time = cmt->cmcor[ch] - cmt->cmcnt[ch];
-    next_time *= NANOSECONDS_PER_SECOND;
-    next_time /= cmt->input_freq;
-    /*
-     * CKS -> div rate
-     *  0 -> 8 (1 << 3)
-     *  1 -> 32 (1 << 5)
-     *  2 -> 128 (1 << 7)
-     *  3 -> 512 (1 << 9)
-     */
-    next_time *= 1 << (3 + FIELD_EX16(cmt->cmcr[ch], CMCR, CKS) * 2);
-    next_time += qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    timer_mod(&cmt->timer[ch], next_time);
-}
-
-static int64_t read_cmcnt(RCMTState *cmt, int ch)
-{
-    int64_t delta, now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-
-    if (cmt->cmstr & (1 << ch)) {
-        delta = (now - cmt->tick[ch]);
-        delta /= NANOSECONDS_PER_SECOND;
-        delta /= cmt->input_freq;
-        delta /= 1 << (3 + FIELD_EX16(cmt->cmcr[ch], CMCR, CKS) * 2);
-        cmt->tick[ch] = now;
-        return cmt->cmcnt[ch] + delta;
-    } else {
-        return cmt->cmcnt[ch];
+    counts = cmt_counts(cmt, ch, now);
+    to_match = cmt_counts_to_match(cmt, ch);
+    period = cmt->cmcor[ch] + 1;
+    next = to_match;
+    if (counts >= to_match) {
+        next += ((counts - to_match) / period + 1) * period;
     }
+    timer_mod(&cmt->timer[ch],
+              cmt->tick[ch] + muldiv64_round_up(next * cmt_div(cmt, ch),
+                                                NANOSECONDS_PER_SECOND,
+                                                cmt->input_freq));
 }
 
 static uint64_t cmt_read(void *opaque, hwaddr offset, unsigned size)
@@ -108,14 +146,10 @@ static uint64_t cmt_read(void *opaque, hwaddr offset, unsigned size)
         }
         switch (offset) {
         case A_CMCR:
-            ret = 0;
-            ret = FIELD_DP16(ret, CMCR, CKS,
-                             FIELD_EX16(cmt->cmstr, CMCR, CKS));
-            ret = FIELD_DP16(ret, CMCR, CMIE,
-                             FIELD_EX16(cmt->cmstr, CMCR, CMIE));
-            return ret;
+            /* Only CKS and CMIE are kept; the other bits read as 0. */
+            return cmt->cmcr[ch];
         case A_CMCNT:
-            return read_cmcnt(cmt, ch);
+            return cmt_count(cmt, ch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
         case A_CMCOR:
             return cmt->cmcor[ch];
         }
@@ -126,11 +160,19 @@ static uint64_t cmt_read(void *opaque, hwaddr offset, unsigned size)
     return UINT64_MAX;
 }
 
-static void start_stop(RCMTState *cmt, int ch, int st)
+static void start_stop(RCMTState *cmt, int ch, int st, int64_t now)
 {
+    if (st == cmt_running(cmt, ch)) {
+        return;
+    }
     if (st) {
-        update_events(cmt, ch);
+        cmt->cmstr |= 1 << ch;
+        cmt->tick[ch] = now;
+        update_events(cmt, ch, now);
     } else {
+        /* The counter holds its value. */
+        cmt_sync(cmt, ch, now);
+        cmt->cmstr &= ~(1 << ch);
         timer_del(&cmt->timer[ch]);
     }
 }
@@ -139,11 +181,12 @@ static void cmt_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
 {
     RCMTState *cmt = opaque;
     int ch = offset / 0x08;
+    /* Both channels of a CMSTR write start or stop at the same time. */
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
     if (offset == A_CMSTR) {
-        cmt->cmstr = FIELD_EX16(val, CMSTR, STR);
-        start_stop(cmt, 0, FIELD_EX16(cmt->cmstr, CMSTR, STR0));
-        start_stop(cmt, 1, FIELD_EX16(cmt->cmstr, CMSTR, STR1));
+        start_stop(cmt, 0, FIELD_EX16(val, CMSTR, STR0), now);
+        start_stop(cmt, 1, FIELD_EX16(val, CMSTR, STR1), now);
     } else {
         offset &= 0x07;
         if (ch == 0) {
@@ -151,15 +194,18 @@ static void cmt_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
         }
         switch (offset) {
         case A_CMCR:
+            cmt_sync(cmt, ch, now);
             cmt->cmcr[ch] = FIELD_DP16(cmt->cmcr[ch], CMCR, CKS,
                                        FIELD_EX16(val, CMCR, CKS));
             cmt->cmcr[ch] = FIELD_DP16(cmt->cmcr[ch], CMCR, CMIE,
                                        FIELD_EX16(val, CMCR, CMIE));
             break;
-        case 2:
+        case A_CMCNT:
             cmt->cmcnt[ch] = val;
+            cmt->tick[ch] = now;
             break;
-        case 4:
+        case A_CMCOR:
+            cmt_sync(cmt, ch, now);
             cmt->cmcor[ch] = val;
             break;
         default:
@@ -168,9 +214,7 @@ static void cmt_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
                           offset);
             return;
         }
-        if (FIELD_EX16(cmt->cmstr, CMSTR, STR) & (1 << ch)) {
-            update_events(cmt, ch);
-        }
+        update_events(cmt, ch, now);
     }
 }
 
@@ -190,9 +234,7 @@ static const MemoryRegionOps cmt_ops = {
 
 static void timer_events(RCMTState *cmt, int ch)
 {
-    cmt->cmcnt[ch] = 0;
-    cmt->tick[ch] = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    update_events(cmt, ch);
+    update_events(cmt, ch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     if (FIELD_EX16(cmt->cmcr[ch], CMCR, CMIE)) {
         qemu_irq_pulse(cmt->cmi[ch]);
     }
