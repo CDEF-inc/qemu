@@ -60,6 +60,7 @@ struct RX62NState {
 
     MemoryRegion *sysmem;
     bool kernel;
+    char *cpu_type;
 
     MemoryRegion iram;
     MemoryRegion iomem1;

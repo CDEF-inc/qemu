@@ -37,6 +37,7 @@ typedef struct DisasContext {
     CPURXState *env;
     uint32_t pc;
     uint32_t tb_flags;
+    uint32_t features;
 } DisasContext;
 
 typedef struct DisasCompare {
@@ -132,6 +133,11 @@ static int bdsp_s(DisasContext *ctx, int d)
         d += 8;
     }
     return d;
+}
+
+static bool has_feature(DisasContext *ctx, uint32_t feature)
+{
+    return (ctx->features & feature) != 0;
 }
 
 /* Include the auto-generated decoder. */
@@ -1838,7 +1844,11 @@ static bool trans_SATR(DisasContext *ctx, arg_SATR *a)
     static bool cat3(trans_, name, _ir)(DisasContext *ctx,              \
                                         cat3(arg_, name, _ir) * a)      \
     {                                                                   \
-        TCGv_i32 imm = tcg_constant_i32(li(ctx, 0));                    \
+        TCGv_i32 imm;                                                   \
+        if (!has_feature(ctx, RX_FEATURE_FPU)) {                        \
+            return false;                                               \
+        }                                                               \
+        imm = tcg_constant_i32(li(ctx, 0));                             \
         gen_helper_##op(cpu_regs[a->rd], tcg_env,                       \
                         cpu_regs[a->rd], imm);                          \
         return true;                                                    \
@@ -1847,6 +1857,9 @@ static bool trans_SATR(DisasContext *ctx, arg_SATR *a)
                                         cat3(arg_, name, _mr) * a)      \
     {                                                                   \
         TCGv_i32 val, mem;                                              \
+        if (!has_feature(ctx, RX_FEATURE_FPU)) {                        \
+            return false;                                               \
+        }                                                               \
         mem = tcg_temp_new_i32();                                       \
         val = rx_load_source(ctx, mem, a->ld, MO_32, a->rs);            \
         gen_helper_##op(cpu_regs[a->rd], tcg_env,                       \
@@ -1858,6 +1871,9 @@ static bool trans_SATR(DisasContext *ctx, arg_SATR *a)
     static bool trans_##name(DisasContext *ctx, arg_##name * a) \
     {                                                           \
         TCGv_i32 val, mem;                                      \
+        if (!has_feature(ctx, RX_FEATURE_FPU)) {                \
+            return false;                                       \
+        }                                                       \
         mem = tcg_temp_new_i32();                               \
         val = rx_load_source(ctx, mem, a->ld, MO_32, a->rs);    \
         gen_helper_##op(cpu_regs[a->rd], tcg_env, val);         \
@@ -1872,7 +1888,11 @@ FOP(FDIV, fdiv)
 /* fcmp #imm, rd */
 static bool trans_FCMP_ir(DisasContext *ctx, arg_FCMP_ir * a)
 {
-    TCGv_i32 imm = tcg_constant_i32(li(ctx, 0));
+    TCGv_i32 imm;
+    if (!has_feature(ctx, RX_FEATURE_FPU)) {
+        return false;
+    }
+    imm = tcg_constant_i32(li(ctx, 0));
     gen_helper_fcmp(tcg_env, cpu_regs[a->rd], imm);
     return true;
 }
@@ -1882,6 +1902,9 @@ static bool trans_FCMP_ir(DisasContext *ctx, arg_FCMP_ir * a)
 static bool trans_FCMP_mr(DisasContext *ctx, arg_FCMP_mr *a)
 {
     TCGv_i32 val, mem;
+    if (!has_feature(ctx, RX_FEATURE_FPU)) {
+        return false;
+    }
     mem = tcg_temp_new_i32();
     val = rx_load_source(ctx, mem, a->ld, MO_32, a->rs);
     gen_helper_fcmp(tcg_env, cpu_regs[a->rd], val);
@@ -1896,6 +1919,9 @@ FCONVOP(ROUND, round)
 static bool trans_ITOF(DisasContext *ctx, arg_ITOF * a)
 {
     TCGv_i32 val, mem;
+    if (!has_feature(ctx, RX_FEATURE_FPU)) {
+        return false;
+    }
     mem = tcg_temp_new_i32();
     val = rx_load_source(ctx, mem, a->ld, a->mi, a->rs);
     gen_helper_itof(cpu_regs[a->rd], tcg_env, val);
@@ -2207,6 +2233,7 @@ static void rx_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     DisasContext *ctx = container_of(dcbase, DisasContext, base);
     ctx->env = cpu_env(cs);
     ctx->tb_flags = ctx->base.tb->flags;
+    ctx->features = ctx->env->features;
 }
 
 static void rx_tr_tb_start(DisasContextBase *dcbase, CPUState *cs)
