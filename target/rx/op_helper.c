@@ -1023,8 +1023,13 @@ void helper_mvtc_v3e(CPURXState *env, uint32_t cr, uint32_t val)
         env->wpri = val & R_WPRI_WIPL_MASK;
         break;
     default:
-        env->wid = FIELD_DP32(env->wid, WID, BWID,
-                              FIELD_EX32(val, WID, BWID));
+        /* BWID 3 is reserved (there are three worlds); it is not written */
+        if (FIELD_EX32(val, WID, BWID) <= RX_WORLD_NONSECURE) {
+            env->wid = FIELD_DP32(env->wid, WID, BWID,
+                                  FIELD_EX32(val, WID, BWID));
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR, "mvtc: reserved WID.BWID 3\n");
+        }
         break;
     }
 }

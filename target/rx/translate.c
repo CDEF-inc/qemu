@@ -476,7 +476,12 @@ static void move_to_cr(DisasContext *ctx, TCGv_i32 val, int cr)
         gen_helper_set_fpsw(tcg_env, val);
         break;
     case 8:     /* BPSW */
-        tcg_gen_mov_i32(cpu_bpsw, val);
+        if (ctx_world(ctx) == RX_WORLD_NONSECURE) {
+            /* Bit 28 of BPSW_NS is always 0 (PSW.IPL[4] in that world) */
+            tcg_gen_andi_i32(cpu_bpsw, val, ~(1u << 28));
+        } else {
+            tcg_gen_mov_i32(cpu_bpsw, val);
+        }
         break;
     case 9:     /* BPC */
         tcg_gen_mov_i32(cpu_bpc, val);

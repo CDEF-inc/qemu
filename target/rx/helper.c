@@ -78,6 +78,7 @@ void rx_world_switch(CPURXState *env, int world)
     int cur = rx_world(env);
     int i;
 
+    g_assert(world <= RX_WORLD_NONSECURE);
     if (world == cur) {
         return;
     }
