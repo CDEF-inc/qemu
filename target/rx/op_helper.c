@@ -18,6 +18,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bitops.h"
+#include "qemu/log.h"
 #include "cpu.h"
 #include "exec/helper-proto.h"
 #include "accel/tcg/cpu-ldst.h"
@@ -136,7 +137,8 @@ static void update_fpsw(CPURXState *env, float32 ret, uintptr_t retaddr)
     env->psw_s = ret;
 }
 
-void helper_set_fpsw(CPURXState *env, uint32_t val)
+/* Apply FPSW.RM to the softfloat status */
+static void update_fp_rounding(CPURXState *env)
 {
     static const int roundmode[] = {
         float_round_nearest_even,
@@ -144,14 +146,66 @@ void helper_set_fpsw(CPURXState *env, uint32_t val)
         float_round_up,
         float_round_down,
     };
+
+    set_float_rounding_mode(roundmode[FIELD_EX32(env->fpsw, FPSW, RM)],
+                            &env->fp_status);
+}
+
+void helper_set_fpsw(CPURXState *env, uint32_t val)
+{
     uint32_t fpsw = env->fpsw;
     fpsw |= 0x7fffff03;
     val &= ~0x80000000;
     fpsw &= val;
     fpsw = FIELD_DP32(fpsw, FPSW, FS, FIELD_EX32(fpsw, FPSW, FLAGS) != 0);
     env->fpsw = fpsw;
-    set_float_rounding_mode(roundmode[FIELD_EX32(env->fpsw, FPSW, RM)],
-                            &env->fp_status);
+    update_fp_rounding(env);
+}
+
+/*
+ * save / rstr: R1 to R15, USP, FPSW, ACC0 and ACC1 to / from a save
+ * register bank. Banks beyond the CPU's number are not defined; they are
+ * ignored here.
+ */
+static RXRegBank *reg_bank(CPURXState *env, uint32_t bank, const char *insn)
+{
+    if (bank >= env->nr_banks) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: no register bank %u\n",
+                      insn, bank);
+        return NULL;
+    }
+    return &env->banks[bank];
+}
+
+void helper_save(CPURXState *env, uint32_t bank)
+{
+    RXRegBank *b = reg_bank(env, bank, "save");
+
+    if (b) {
+        memcpy(b->regs, &env->regs[1], sizeof(b->regs));
+        b->usp = env->psw_u ? env->regs[0] : env->usp;
+        b->fpsw = env->fpsw;
+        b->acc[0] = env->acc[0];
+        b->acc[1] = env->acc[1];
+    }
+}
+
+void helper_rstr(CPURXState *env, uint32_t bank)
+{
+    RXRegBank *b = reg_bank(env, bank, "rstr");
+
+    if (b) {
+        memcpy(&env->regs[1], b->regs, sizeof(b->regs));
+        if (env->psw_u) {
+            env->regs[0] = b->usp;
+        } else {
+            env->usp = b->usp;
+        }
+        env->fpsw = b->fpsw;
+        update_fp_rounding(env);
+        env->acc[0] = b->acc[0];
+        env->acc[1] = b->acc[1];
+    }
 }
 
 #define FLOATOP(op, func)                                           \

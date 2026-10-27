@@ -685,3 +685,17 @@ XOR_ir		1111 1101 0111 ..00 1101 ....		@b3_rd_li
 XOR_mr		1111 1100 0011 01.. .... ....		@b3_rd_ld_ub
 # XOR dsp[rs], rd
 XOR_mr		0000 0110 ..10 00.. 0000 1101 .... ....	@b4_rd_ldmi
+# XOR rs, rs2, rd (RXv3)
+XOR_rrr		1111 1111 0110 .... .... ....		@b3_rd_rs_rs2
+
+# BFMOV #slsb, #dlsb, #width, rs, rd (RXv3; the operands follow in #imm16)
+BFMOV		1111 1100 0101 1110 rs:4 rd:4		&rr
+# BFMOVZ #slsb, #dlsb, #width, rs, rd (RXv3)
+BFMOVZ		1111 1100 0101 1010 rs:4 rd:4		&rr
+
+# SAVE #uimm8 / SAVE rs (RXv3)
+SAVE_i		1111 1101 0111 0110 1110 0000 imm:8
+SAVE_r		1111 1101 0111 0110 1100 rs:4 0000 0000
+# RSTR #uimm8 / RSTR rs (RXv3)
+RSTR_i		1111 1101 0111 0110 1111 0000 imm:8
+RSTR_r		1111 1101 0111 0110 1101 rs:4 0000 0000

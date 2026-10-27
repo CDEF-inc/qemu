@@ -70,7 +70,16 @@ FIELD(FPSW, FS, 31, 1)
 
 enum {
     NUM_REGS = 16,
+    RX_MAX_BANKS = 256,         /* save register banks (RXv3) */
 };
+
+/* A save register bank of the RXv3 register bank save function */
+typedef struct RXRegBank {
+    uint32_t regs[NUM_REGS - 1];        /* R1 to R15 */
+    uint32_t usp;
+    uint32_t fpsw;
+    Int128 acc[2];
+} RXRegBank;
 
 /* Instruction set and optional units of a CPU model */
 enum {
@@ -115,6 +124,8 @@ typedef struct CPUArchState {
 
     /* Internal use */
     uint32_t features;          /* RX_FEATURE_* of the CPU model */
+    uint32_t nr_banks;          /* number of save register banks */
+    RXRegBank banks[RX_MAX_BANKS];  /* undefined after a reset */
     uint32_t in_sleep;
     uint32_t req_irq;           /* Requested interrupt no (hard) */
     uint32_t req_ipl;           /* Requested interrupt level */
@@ -149,6 +160,7 @@ struct RXCPUClass {
     DeviceRealize parent_realize;
     ResettablePhases parent_phases;
     uint32_t features;          /* RX_FEATURE_* of the model */
+    uint32_t nr_banks;          /* save register banks of the model */
 };
 
 #define CPU_RESOLVING_TYPE TYPE_RX_CPU

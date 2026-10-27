@@ -19,6 +19,7 @@
 #include "qemu/osdep.h"
 #include "qemu/qemu-print.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "cpu.h"
 #include "migration/vmstate.h"
 #include "exec/cputlb.h"
@@ -159,6 +160,14 @@ static void rx_cpu_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "dfpu needs an RXv3 or later CPU");
         return;
     }
+    if (env->nr_banks > RX_MAX_BANKS) {
+        error_setg(errp, "banks must be at most %d", RX_MAX_BANKS);
+        return;
+    }
+    if (env->nr_banks && !rx_has_feature(env, RX_FEATURE_V3)) {
+        error_setg(errp, "register banks need an RXv3 or later CPU");
+        return;
+    }
 
     cpu_exec_realizefn(cs, &local_err);
     if (local_err != NULL) {
@@ -216,6 +225,7 @@ static void rx_cpu_init(Object *obj)
     RXCPU *cpu = RX_CPU(obj);
 
     cpu->env.features = RX_CPU_GET_CLASS(obj)->features;
+    cpu->env.nr_banks = RX_CPU_GET_CLASS(obj)->nr_banks;
     qdev_init_gpio_in(DEVICE(cpu), rx_cpu_set_irq, 2);
 }
 
@@ -248,6 +258,18 @@ static bool rx_cpu_get_dfpu(Object *obj, Error **errp)
 static void rx_cpu_set_dfpu(Object *obj, bool value, Error **errp)
 {
     rx_cpu_set_feature(obj, RX_FEATURE_DFPU, value);
+}
+
+static void rx_cpu_get_banks(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    visit_type_uint32(v, name, &RX_CPU(obj)->env.nr_banks, errp);
+}
+
+static void rx_cpu_set_banks(Object *obj, Visitor *v, const char *name,
+                             void *opaque, Error **errp)
+{
+    visit_type_uint32(v, name, &RX_CPU(obj)->env.nr_banks, errp);
 }
 
 #include "hw/core/sysemu-cpu-ops.h"
@@ -310,17 +332,25 @@ static void rx_cpu_class_init(ObjectClass *klass, const void *data)
                                    rx_cpu_set_dfpu);
     object_class_property_set_description(klass, "dfpu",
         "Double-precision floating-point unit (RXv3 and later)");
+    object_class_property_add(klass, "banks", "uint32", rx_cpu_get_banks,
+                              rx_cpu_set_banks, NULL, NULL);
+    object_class_property_set_description(klass, "banks",
+        "Number of save register banks for SAVE / RSTR (RXv3 and later)");
 }
 
 /*
  * The generic models enable the units that LLVM's -mcpu of the same name
  * assumes: RXv1 cores may lack the FPU (RX100, RX200), RXv2 and later
  * have it, and RXv3 parts commonly have the double-precision FPU. Use
- * fpu=on|off and dfpu=on|off to model a particular part.
+ * fpu=on|off and dfpu=on|off to model a particular part. RXv3 cores get 16
+ * save register banks, as on the RX72N and RX66N (banks=N changes it).
  */
 static void rx_cpu_class_init_features(ObjectClass *oc, const void *data)
 {
-    RX_CPU_CLASS(oc)->features = (uintptr_t)data;
+    RXCPUClass *rcc = RX_CPU_CLASS(oc);
+
+    rcc->features = (uintptr_t)data;
+    rcc->nr_banks = (rcc->features & RX_FEATURE_V3) ? 16 : 0;
 }
 
 #define DEFINE_RX_CPU_TYPE(type, feats)                 \

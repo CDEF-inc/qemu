@@ -26,7 +26,9 @@ another core on the same board; the peripherals stay those of the RX62N.
 -  ``rxv3e``: RXv3e with the FPU and the double-precision FPU
 
 The units can be switched with the ``fpu`` and ``dfpu`` properties, for
-example ``-cpu rxv3,dfpu=off``. Instructions of an ISA or unit the core
+example ``-cpu rxv3,dfpu=off``. RXv3 cores have 16 save register banks for
+``save`` / ``rstr`` (as the RX72N); ``banks=N`` (0 to 256) changes that,
+and ``banks=0`` makes the instructions undefined. Instructions of an ISA or unit the core
 does not have raise the undefined instruction exception.
 
 RXv2 and later cores have the exception table register (EXTB), which
@@ -38,6 +40,9 @@ accumulators and the RXv2 DSP instructions (``emaca``, ``emsba``,
 ``emula``, ``maclh``, ``msbhi``, ``msblh``, ``msblo``, ``mullh``,
 ``mvfacgu``, ``mvfaclo``, ``mvtacgu``, ``racl``, ``rdacl``, ``rdacw``, and
 the A1 and shift forms of the RXv1 ones).
+
+RXv3 and later cores add ``bfmov``, ``bfmovz``, the three-operand ``xor``
+and the register bank save function (``save``, ``rstr``).
 
 Example of ``qemu-system-rx`` usage for RX is shown below:
 

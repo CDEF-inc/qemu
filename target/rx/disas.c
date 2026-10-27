@@ -537,6 +537,65 @@ static bool trans_XOR_mr(DisasContext *ctx, arg_XOR_mr *a)
     return true;
 }
 
+/* xor rs,rs2,rd */
+static bool trans_XOR_rrr(DisasContext *ctx, arg_XOR_rrr *a)
+{
+    prt("xor\tr%d, r%d, r%d", a->rs, a->rs2, a->rd);
+    return true;
+}
+
+static void prt_bfmov(DisasContext *ctx, const char *insn, int rs, int rd)
+{
+    uint32_t imm = li(ctx, 2) & 0xffff;
+    int dlsb = extract32(imm, 5, 5);
+
+    prt("%s\t#%d, #%d, #%d, r%d, r%d", insn,
+        (dlsb - extract32(imm, 0, 5)) & 31, dlsb,
+        (extract32(imm, 10, 5) - dlsb) & 31, rs, rd);
+}
+
+/* bfmov #slsb, #dlsb, #width, rs, rd */
+static bool trans_BFMOV(DisasContext *ctx, arg_BFMOV *a)
+{
+    prt_bfmov(ctx, "bfmov", a->rs, a->rd);
+    return true;
+}
+
+/* bfmovz #slsb, #dlsb, #width, rs, rd */
+static bool trans_BFMOVZ(DisasContext *ctx, arg_BFMOVZ *a)
+{
+    prt_bfmov(ctx, "bfmovz", a->rs, a->rd);
+    return true;
+}
+
+/* save #uimm8 */
+static bool trans_SAVE_i(DisasContext *ctx, arg_SAVE_i *a)
+{
+    prt("save\t#%d", a->imm);
+    return true;
+}
+
+/* save rs */
+static bool trans_SAVE_r(DisasContext *ctx, arg_SAVE_r *a)
+{
+    prt("save\tr%d", a->rs);
+    return true;
+}
+
+/* rstr #uimm8 */
+static bool trans_RSTR_i(DisasContext *ctx, arg_RSTR_i *a)
+{
+    prt("rstr\t#%d", a->imm);
+    return true;
+}
+
+/* rstr rs */
+static bool trans_RSTR_r(DisasContext *ctx, arg_RSTR_r *a)
+{
+    prt("rstr\tr%d", a->rs);
+    return true;
+}
+
 /* tst #imm, rd */
 static bool trans_TST_ir(DisasContext *ctx, arg_TST_ir *a)
 {
