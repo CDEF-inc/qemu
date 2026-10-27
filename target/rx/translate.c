@@ -50,7 +50,7 @@ const char *rx_crname(uint8_t cr)
 {
     static const char *cr_names[] = {
         "psw", "pc", "usp", "fpsw", "", "", "", "",
-        "bpsw", "bpc", "isp", "fintv", "intb", "", "", ""
+        "bpsw", "bpc", "isp", "fintv", "intb", "extb", "", ""
     };
     if (cr >= ARRAY_SIZE(cr_names)) {
         return "illegal";
@@ -68,7 +68,7 @@ static TCGv_i32 cpu_regs[16];
 static TCGv_i32 cpu_psw_o, cpu_psw_s, cpu_psw_z, cpu_psw_c;
 static TCGv_i32 cpu_psw_i, cpu_psw_pm, cpu_psw_u, cpu_psw_ipl;
 static TCGv_i32 cpu_usp, cpu_fpsw, cpu_bpsw, cpu_bpc, cpu_isp;
-static TCGv_i32 cpu_fintv, cpu_intb, cpu_pc;
+static TCGv_i32 cpu_fintv, cpu_intb, cpu_pc, cpu_extb, cpu_li;
 static TCGv_i64 cpu_acc;
 
 #define cpu_sp cpu_regs[0]
@@ -135,9 +135,10 @@ static int bdsp_s(DisasContext *ctx, int d)
     return d;
 }
 
-static bool has_feature(DisasContext *ctx, uint32_t feature)
+/* Whether the core has all of the RX_FEATURE_* bits in @features */
+static bool has_feature(DisasContext *ctx, uint32_t features)
 {
-    return (ctx->features & feature) != 0;
+    return (ctx->features & features) == features;
 }
 
 /* Include the auto-generated decoder. */
@@ -366,6 +367,12 @@ static void move_from_cr(DisasContext *ctx, TCGv_i32 ret, int cr, uint32_t pc)
     case 12:    /* INTB */
         tcg_gen_mov_i32(ret, cpu_intb);
         break;
+    case 13:    /* EXTB */
+        if (has_feature(ctx, RX_FEATURE_V2)) {
+            tcg_gen_mov_i32(ret, cpu_extb);
+            break;
+        }
+        /* fall through */
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "Unimplement control register %d", cr);
         /* Unimplement registers return 0 */
@@ -420,6 +427,12 @@ static void move_to_cr(DisasContext *ctx, TCGv_i32 val, int cr)
     case 12:    /* INTB */
         tcg_gen_mov_i32(cpu_intb, val);
         break;
+    case 13:    /* EXTB */
+        if (has_feature(ctx, RX_FEATURE_V2)) {
+            tcg_gen_mov_i32(cpu_extb, val);
+            break;
+        }
+        /* fall through */
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Unimplement control register %d", cr);
@@ -539,6 +552,9 @@ static bool trans_MOV_mm(DisasContext *ctx, arg_MOV_mm *a)
 static bool trans_MOV_rp(DisasContext *ctx, arg_MOV_rp *a)
 {
     TCGv_i32 val;
+    if (a->sz == 3) {
+        return false;
+    }
     val = tcg_temp_new_i32();
     tcg_gen_mov_i32(val, cpu_regs[a->rs]);
     if (a->ad == 1) {
@@ -556,6 +572,9 @@ static bool trans_MOV_rp(DisasContext *ctx, arg_MOV_rp *a)
 static bool trans_MOV_pr(DisasContext *ctx, arg_MOV_pr *a)
 {
     TCGv_i32 val;
+    if (a->sz == 3) {
+        return false;
+    }
     val = tcg_temp_new_i32();
     if (a->ad == 1) {
         tcg_gen_subi_i32(cpu_regs[a->rd], cpu_regs[a->rd], 1 << a->sz);
@@ -758,6 +777,60 @@ static bool trans_STZ(DisasContext *ctx, arg_STZ *a)
 static bool trans_STNZ(DisasContext *ctx, arg_STNZ *a)
 {
     stcond(TCG_COND_NE, a->rd, a->imm);
+    return true;
+}
+
+/* stz rs,rd */
+static bool trans_STZ_rr(DisasContext *ctx, arg_STZ_rr *a)
+{
+    if (!has_feature(ctx, RX_FEATURE_V2)) {
+        return false;
+    }
+    tcg_gen_movcond_i32(TCG_COND_EQ, cpu_regs[a->rd], cpu_psw_z,
+                        tcg_constant_i32(0), cpu_regs[a->rs], cpu_regs[a->rd]);
+    return true;
+}
+
+/* stnz rs,rd */
+static bool trans_STNZ_rr(DisasContext *ctx, arg_STNZ_rr *a)
+{
+    if (!has_feature(ctx, RX_FEATURE_V2)) {
+        return false;
+    }
+    tcg_gen_movcond_i32(TCG_COND_NE, cpu_regs[a->rd], cpu_psw_z,
+                        tcg_constant_i32(0), cpu_regs[a->rs], cpu_regs[a->rd]);
+    return true;
+}
+
+/* movli [rs],rd */
+static bool trans_MOVLI(DisasContext *ctx, arg_MOVLI *a)
+{
+    if (!has_feature(ctx, RX_FEATURE_V2)) {
+        return false;
+    }
+    rx_gen_ld(ctx, MO_32, cpu_regs[a->rd], cpu_regs[a->rs]);
+    tcg_gen_movi_i32(cpu_li, 1);
+    return true;
+}
+
+/* movco rs,[rd] */
+static bool trans_MOVCO(DisasContext *ctx, arg_MOVCO *a)
+{
+    TCGLabel *fail, *done;
+
+    if (!has_feature(ctx, RX_FEATURE_V2)) {
+        return false;
+    }
+    fail = gen_new_label();
+    done = gen_new_label();
+    tcg_gen_brcondi_i32(TCG_COND_EQ, cpu_li, 0, fail);
+    rx_gen_st(ctx, MO_32, cpu_regs[a->rs], cpu_regs[a->rd]);
+    tcg_gen_movi_i32(cpu_regs[a->rs], 0);
+    tcg_gen_br(done);
+    gen_set_label(fail);
+    tcg_gen_movi_i32(cpu_regs[a->rs], 1);
+    gen_set_label(done);
+    tcg_gen_movi_i32(cpu_li, 0);
     return true;
 }
 
@@ -1867,11 +1940,11 @@ static bool trans_SATR(DisasContext *ctx, arg_SATR *a)
         return true;                                                    \
     }
 
-#define FCONVOP(name, op)                                       \
+#define FCONVOP(name, op, feat)                                 \
     static bool trans_##name(DisasContext *ctx, arg_##name * a) \
     {                                                           \
         TCGv_i32 val, mem;                                      \
-        if (!has_feature(ctx, RX_FEATURE_FPU)) {                \
+        if (!has_feature(ctx, feat)) {                          \
             return false;                                       \
         }                                                       \
         mem = tcg_temp_new_i32();                               \
@@ -1884,6 +1957,23 @@ FOP(FADD, fadd)
 FOP(FSUB, fsub)
 FOP(FMUL, fmul)
 FOP(FDIV, fdiv)
+
+/* fadd/fsub/fmul rs, rs2, rd: rd = rs2 op rs (RXv2) */
+#define FOP3(name, op)                                                  \
+    static bool cat3(trans_, name, _rrr)(DisasContext *ctx,             \
+                                         cat3(arg_, name, _rrr) * a)    \
+    {                                                                   \
+        if (!has_feature(ctx, RX_FEATURE_V2 | RX_FEATURE_FPU)) {        \
+            return false;                                               \
+        }                                                               \
+        gen_helper_##op(cpu_regs[a->rd], tcg_env,                       \
+                        cpu_regs[a->rs2], cpu_regs[a->rs]);             \
+        return true;                                                    \
+    }
+
+FOP3(FADD, fadd)
+FOP3(FSUB, fsub)
+FOP3(FMUL, fmul)
 
 /* fcmp #imm, rd */
 static bool trans_FCMP_ir(DisasContext *ctx, arg_FCMP_ir * a)
@@ -1911,8 +2001,10 @@ static bool trans_FCMP_mr(DisasContext *ctx, arg_FCMP_mr *a)
     return true;
 }
 
-FCONVOP(FTOI, ftoi)
-FCONVOP(ROUND, round)
+FCONVOP(FTOI, ftoi, RX_FEATURE_FPU)
+FCONVOP(ROUND, round, RX_FEATURE_FPU)
+FCONVOP(FSQRT, fsqrt, RX_FEATURE_V2 | RX_FEATURE_FPU)
+FCONVOP(FTOU, ftou, RX_FEATURE_V2 | RX_FEATURE_FPU)
 
 /* itof rs, rd */
 /* itof dsp[rs], rd */
@@ -1925,6 +2017,20 @@ static bool trans_ITOF(DisasContext *ctx, arg_ITOF * a)
     mem = tcg_temp_new_i32();
     val = rx_load_source(ctx, mem, a->ld, a->mi, a->rs);
     gen_helper_itof(cpu_regs[a->rd], tcg_env, val);
+    return true;
+}
+
+/* utof rs, rd */
+/* utof dsp[rs], rd */
+static bool trans_UTOF(DisasContext *ctx, arg_UTOF * a)
+{
+    TCGv_i32 val, mem;
+    if (!has_feature(ctx, RX_FEATURE_V2 | RX_FEATURE_FPU)) {
+        return false;
+    }
+    mem = tcg_temp_new_i32();
+    val = rx_load_source(ctx, mem, a->ld, a->mi, a->rs);
+    gen_helper_utof(cpu_regs[a->rd], tcg_env, val);
     return true;
 }
 
@@ -2177,6 +2283,7 @@ static bool trans_RTFI(DisasContext *ctx, arg_RTFI *a)
         tcg_gen_mov_i32(cpu_pc, cpu_bpc);
         tcg_gen_mov_i32(psw, cpu_bpsw);
         gen_helper_set_psw_rte(tcg_env, psw);
+        tcg_gen_movi_i32(cpu_li, 0);
         ctx->base.is_jmp = DISAS_EXIT;
     }
     return true;
@@ -2191,6 +2298,7 @@ static bool trans_RTE(DisasContext *ctx, arg_RTE *a)
         pop(ctx, cpu_pc);
         pop(ctx, psw);
         gen_helper_set_psw_rte(tcg_env, psw);
+        tcg_gen_movi_i32(cpu_li, 0);
         ctx->base.is_jmp = DISAS_EXIT;
     }
     return true;
@@ -2329,6 +2437,8 @@ void rx_translate_init(void)
     ALLOC_REGISTER(psw_ipl, "PSW(IPL)");
     ALLOC_REGISTER(usp, "USP");
     ALLOC_REGISTER(fpsw, "FPSW");
+    ALLOC_REGISTER(extb, "EXTB");
+    ALLOC_REGISTER(li, "LI");
     ALLOC_REGISTER(bpsw, "BPSW");
     ALLOC_REGISTER(bpc, "BPC");
     ALLOC_REGISTER(isp, "ISP");

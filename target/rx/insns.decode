@@ -253,6 +253,18 @@ EMULU_mr	0000 0110 ..10 00.. 0000 0111 .... ....	@b4_rd_ldmi
 
 # FADD #imm, rd
 FADD_ir		1111 1101 0111 0010 0010 rd:4
+# FADD rs, rs2, rd (RXv2)
+FADD_rrr	1111 1111 1010 .... .... ....		@b3_rd_rs_rs2
+# FSUB rs, rs2, rd (RXv2)
+FSUB_rrr	1111 1111 1000 .... .... ....		@b3_rd_rs_rs2
+# FMUL rs, rs2, rd (RXv2)
+FMUL_rrr	1111 1111 1011 .... .... ....		@b3_rd_rs_rs2
+# FSQRT rs, rd (RXv2)
+# FSQRT dsp[rs], rd
+FSQRT		1111 1100 1010 00.. .... ....		@b3_rd_ld_ul
+# FTOU rs, rd (RXv2)
+# FTOU dsp[rs], rd
+FTOU		1111 1100 1010 01.. .... ....		@b3_rd_ld_ul
 # FADD rs, rd
 # FADD dsp[rs], rd
 FADD_mr		1111 1100 1000 10.. .... ....		@b3_rd_ld_ul
@@ -293,6 +305,11 @@ INT		0111 0101 0110 0000 imm:8
 ITOF		1111 1100 0100 01.. .... ....		@b3_rd_ld_ub
 # ITOF dsp[rs], rd
 ITOF		0000 0110 ..10 00.. 0001 0001 .... ....	@b4_rd_ldmi
+# UTOF dsp[rs].ub, rd (RXv2)
+# UTOF rs, rd
+UTOF		1111 1100 0101 01.. .... ....		@b3_rd_ld_ub
+# UTOF dsp[rs], rd (RXv2)
+UTOF		0000 0110 ..10 00.. 0001 0101 .... ....	@b4_rd_ldmi
 
 # JMP rs
 JMP		0111 1111 0000 rs:4			&jreg
@@ -373,10 +390,18 @@ MOV_mm		1101 ldd:2 lds:2 rs:4 rd:4		sz=1
 MOV_mm		1110 ldd:2 lds:2 rs:4 rd:4		sz=2
 # MOV.l rs, [rd+]
 # MOV.l rs, [-rd]
-MOV_rp		1111 1101 0010 0 ad:1 sz:2 rd:4 rs:4
+{
+  # MOVCO rs, [rd] (RXv2)
+  MOVCO		1111 1101 0010 0111 .... ....		@b3_rs_rd
+  MOV_rp	1111 1101 0010 0 ad:1 sz:2 rd:4 rs:4
+}
 # MOV.l [rs+], rd
 # MOV.l [-rs], rd
-MOV_pr		1111 1101 0010 1 ad:1 sz:2 rd:4 rs:4
+{
+  # MOVLI [rs], rd (RXv2)
+  MOVLI		1111 1101 0010 1111 .... ....		@b3_rd_rs
+  MOV_pr	1111 1101 0010 1 ad:1 sz:2 rd:4 rs:4
+}
 
 # MOVU.<bw> dsp5[rs], rd
 MOVU_mr		1011 sz:1 ... . rs:3 . rd:3		dsp=%b2_dsp5_3
@@ -568,6 +593,10 @@ SHLR_rr		1111 1101 0110 0000 .... ....		@b3_rd_rs
 STNZ		1111 1101 0111 ..00 1111 ....		@b3_rd_li
 # STZ #imm, rd
 STZ		1111 1101 0111 ..00 1110 ....		@b3_rd_li
+# STNZ rs, rd (RXv2)
+STNZ_rr		1111 1100 0100 1111 .... ....		@b3_rd_rs
+# STZ rs, rd (RXv2)
+STZ_rr		1111 1100 0100 1011 .... ....		@b3_rd_rs
 
 # SUB #uimm4, rd
 SUB_ir		0110 0000 .... ....			@b2_rds_uimm4
