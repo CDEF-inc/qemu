@@ -38,6 +38,10 @@ void rx_cpu_unpack_psw(CPURXState *env, uint32_t psw, int rte)
             env->psw_pm = FIELD_EX32(psw, PSW, PM);
         }
         env->psw_u = FIELD_EX32(psw, PSW, U);
+        if (env->psw_pm) {
+            /* The transition to user mode sets PSW.U (manual 1.4.2) */
+            env->psw_u = 1;
+        }
         env->psw_i = FIELD_EX32(psw, PSW, I);
     }
     env->psw_o = FIELD_EX32(psw, PSW, O) << 31;
