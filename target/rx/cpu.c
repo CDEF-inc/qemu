@@ -19,6 +19,7 @@
 #include "qemu/osdep.h"
 #include "qemu/qemu-print.h"
 #include "qapi/error.h"
+#include "hw/core/qdev-properties.h"
 #include "cpu.h"
 #include "migration/vmstate.h"
 #include "exec/cputlb.h"
@@ -219,10 +220,20 @@ static void rx_cpu_init(Object *obj)
     qdev_init_gpio_in(DEVICE(cpu), rx_cpu_set_irq, 2);
 }
 
-static void rx_cpu_set_feature(Object *obj, uint32_t feature, bool value)
+/*
+ * The translator reads the features when it translates a block, and they
+ * are not part of the TB flags, so they cannot change once the CPU is
+ * realized (and rx_cpu_realize() checks their combination).
+ */
+static void rx_cpu_set_feature(Object *obj, const char *name,
+                               uint32_t feature, bool value, Error **errp)
 {
     CPURXState *env = &RX_CPU(obj)->env;
 
+    if (DEVICE(obj)->realized) {
+        qdev_prop_set_after_realize(DEVICE(obj), name, errp);
+        return;
+    }
     if (value) {
         env->features |= feature;
     } else {
@@ -237,7 +248,7 @@ static bool rx_cpu_get_fpu(Object *obj, Error **errp)
 
 static void rx_cpu_set_fpu(Object *obj, bool value, Error **errp)
 {
-    rx_cpu_set_feature(obj, RX_FEATURE_FPU, value);
+    rx_cpu_set_feature(obj, "fpu", RX_FEATURE_FPU, value, errp);
 }
 
 static bool rx_cpu_get_dfpu(Object *obj, Error **errp)
@@ -247,7 +258,7 @@ static bool rx_cpu_get_dfpu(Object *obj, Error **errp)
 
 static void rx_cpu_set_dfpu(Object *obj, bool value, Error **errp)
 {
-    rx_cpu_set_feature(obj, RX_FEATURE_DFPU, value);
+    rx_cpu_set_feature(obj, "dfpu", RX_FEATURE_DFPU, value, errp);
 }
 
 #include "hw/core/sysemu-cpu-ops.h"
