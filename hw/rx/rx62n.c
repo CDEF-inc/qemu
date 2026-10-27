@@ -245,8 +245,11 @@ static void rx62n_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion(s->sysmem, RX62N_CFLASH_BASE, &s->c_flash);
 
     /* Initialize CPU */
-    object_initialize_child(OBJECT(s), "cpu", &s->cpu, TYPE_RX62N_CPU);
-    qdev_realize(DEVICE(&s->cpu), NULL, &error_abort);
+    object_initialize_child(OBJECT(s), "cpu", &s->cpu,
+                            s->cpu_type ? s->cpu_type : TYPE_RX62N_CPU);
+    if (!qdev_realize(DEVICE(&s->cpu), NULL, errp)) {
+        return;
+    }
 
     register_icu(s);
     s->cpu.env.ack = qdev_get_gpio_in_named(DEVICE(&s->icu), "ack", 0);
@@ -262,6 +265,7 @@ static const Property rx62n_properties[] = {
                      MemoryRegion *),
     DEFINE_PROP_BOOL("load-kernel", RX62NState, kernel, false),
     DEFINE_PROP_UINT32("xtal-frequency-hz", RX62NState, xtal_freq_hz, 0),
+    DEFINE_PROP_STRING("cpu-type", RX62NState, cpu_type),
 };
 
 static void rx62n_class_init(ObjectClass *klass, const void *data)

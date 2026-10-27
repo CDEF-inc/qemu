@@ -106,6 +106,8 @@ static void rx_gdbsim_init(MachineState *machine)
                              rxc->xtal_freq_hz, &error_abort);
     object_property_set_bool(OBJECT(&s->mcu), "load-kernel",
                              kernel_filename != NULL, &error_abort);
+    object_property_set_str(OBJECT(&s->mcu), "cpu-type", machine->cpu_type,
+                            &error_abort);
 
     if (!kernel_filename) {
         if (machine->firmware) {
@@ -113,7 +115,7 @@ static void rx_gdbsim_init(MachineState *machine)
         }
     }
 
-    qdev_realize(DEVICE(&s->mcu), NULL, &error_abort);
+    qdev_realize(DEVICE(&s->mcu), NULL, &error_fatal);
 
     /* Load kernel and dtb */
     if (kernel_filename) {
@@ -158,9 +160,18 @@ static void rx_gdbsim_init(MachineState *machine)
 static void rx_gdbsim_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
+    static const char * const valid_cpu_types[] = {
+        TYPE_RX62N_CPU,
+        TYPE_RXV1_CPU,
+        TYPE_RXV2_CPU,
+        TYPE_RXV3_CPU,
+        TYPE_RXV3E_CPU,
+        NULL
+    };
 
     mc->init = rx_gdbsim_init;
     mc->default_cpu_type = TYPE_RX62N_CPU;
+    mc->valid_cpu_types = valid_cpu_types;
     mc->default_ram_size = 16 * MiB;
     mc->default_ram_id = "ext-sdram";
 }

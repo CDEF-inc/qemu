@@ -16,6 +16,19 @@ This target emulated following devices.
 
 -  External memory 16MByte
 
+The core defaults to the RX62N's (RXv1 with the FPU). ``-cpu`` selects
+another core on the same board; the peripherals stay those of the RX62N.
+
+-  ``rx62n``: RXv1 with the FPU
+-  ``rxv1``: RXv1 without the FPU (RX100, RX200)
+-  ``rxv2``: RXv2 with the FPU
+-  ``rxv3``: RXv3 with the FPU and the double-precision FPU
+-  ``rxv3e``: RXv3e with the FPU and the double-precision FPU
+
+The units can be switched with the ``fpu`` and ``dfpu`` properties, for
+example ``-cpu rxv3,dfpu=off``. Instructions of an ISA or unit the core
+does not have raise the undefined instruction exception.
+
 Example of ``qemu-system-rx`` usage for RX is shown below:
 
 Download ``<u-boot_image_file>`` from

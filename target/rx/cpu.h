@@ -71,6 +71,15 @@ enum {
     NUM_REGS = 16,
 };
 
+/* Instruction set and optional units of a CPU model */
+enum {
+    RX_FEATURE_V2   = 1 << 0,   /* RXv2 instructions */
+    RX_FEATURE_V3   = 1 << 1,   /* RXv3 instructions */
+    RX_FEATURE_V3E  = 1 << 2,   /* RXv3e instructions */
+    RX_FEATURE_FPU  = 1 << 3,   /* single-precision FPU */
+    RX_FEATURE_DFPU = 1 << 4,   /* double-precision FPU (RXv3 and later) */
+};
+
 typedef struct CPUArchState {
     /* CPU registers */
     uint32_t regs[NUM_REGS];    /* general registers */
@@ -96,6 +105,7 @@ typedef struct CPUArchState {
     struct {} end_reset_fields;
 
     /* Internal use */
+    uint32_t features;          /* RX_FEATURE_* of the CPU model */
     uint32_t in_sleep;
     uint32_t req_irq;           /* Requested interrupt no (hard) */
     uint32_t req_ipl;           /* Requested interrupt level */
@@ -129,6 +139,7 @@ struct RXCPUClass {
 
     DeviceRealize parent_realize;
     ResettablePhases parent_phases;
+    uint32_t features;          /* RX_FEATURE_* of the model */
 };
 
 #define CPU_RESOLVING_TYPE TYPE_RX_CPU
@@ -145,6 +156,11 @@ void rx_translate_init(void);
 void rx_translate_code(CPUState *cs, TranslationBlock *tb,
                        int *max_insns, vaddr pc, void *host_pc);
 void rx_cpu_unpack_psw(CPURXState *env, uint32_t psw, int rte);
+
+static inline bool rx_has_feature(CPURXState *env, uint32_t feature)
+{
+    return (env->features & feature) != 0;
+}
 
 #define CPU_INTERRUPT_SOFT CPU_INTERRUPT_TGT_INT_0
 #define CPU_INTERRUPT_FIR  CPU_INTERRUPT_TGT_INT_1

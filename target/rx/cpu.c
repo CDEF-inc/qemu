@@ -19,6 +19,7 @@
 #include "qemu/osdep.h"
 #include "qemu/qemu-print.h"
 #include "qapi/error.h"
+#include "hw/core/qdev-properties.h"
 #include "cpu.h"
 #include "migration/vmstate.h"
 #include "exec/cputlb.h"
@@ -145,7 +146,14 @@ static void rx_cpu_realize(DeviceState *dev, Error **errp)
 {
     CPUState *cs = CPU(dev);
     RXCPUClass *rcc = RX_CPU_GET_CLASS(dev);
+    CPURXState *env = cpu_env(cs);
     Error *local_err = NULL;
+
+    if (rx_has_feature(env, RX_FEATURE_DFPU) &&
+        !rx_has_feature(env, RX_FEATURE_V3)) {
+        error_setg(errp, "dfpu needs an RXv3 or later CPU");
+        return;
+    }
 
     cpu_exec_realizefn(cs, &local_err);
     if (local_err != NULL) {
@@ -202,7 +210,49 @@ static void rx_cpu_init(Object *obj)
 {
     RXCPU *cpu = RX_CPU(obj);
 
+    cpu->env.features = RX_CPU_GET_CLASS(obj)->features;
     qdev_init_gpio_in(DEVICE(cpu), rx_cpu_set_irq, 2);
+}
+
+/*
+ * The translator reads the features when it translates a block, and they
+ * are not part of the TB flags, so they cannot change once the CPU is
+ * realized (and rx_cpu_realize() checks their combination).
+ */
+static void rx_cpu_set_feature(Object *obj, const char *name,
+                               uint32_t feature, bool value, Error **errp)
+{
+    CPURXState *env = &RX_CPU(obj)->env;
+
+    if (DEVICE(obj)->realized) {
+        qdev_prop_set_after_realize(DEVICE(obj), name, errp);
+        return;
+    }
+    if (value) {
+        env->features |= feature;
+    } else {
+        env->features &= ~feature;
+    }
+}
+
+static bool rx_cpu_get_fpu(Object *obj, Error **errp)
+{
+    return rx_has_feature(&RX_CPU(obj)->env, RX_FEATURE_FPU);
+}
+
+static void rx_cpu_set_fpu(Object *obj, bool value, Error **errp)
+{
+    rx_cpu_set_feature(obj, "fpu", RX_FEATURE_FPU, value, errp);
+}
+
+static bool rx_cpu_get_dfpu(Object *obj, Error **errp)
+{
+    return rx_has_feature(&RX_CPU(obj)->env, RX_FEATURE_DFPU);
+}
+
+static void rx_cpu_set_dfpu(Object *obj, bool value, Error **errp)
+{
+    rx_cpu_set_feature(obj, "dfpu", RX_FEATURE_DFPU, value, errp);
 }
 
 #include "hw/core/sysemu-cpu-ops.h"
@@ -256,28 +306,54 @@ static void rx_cpu_class_init(ObjectClass *klass, const void *data)
 
     cc->gdb_core_xml_file = "rx-core.xml";
     cc->tcg_ops = &rx_tcg_ops;
+
+    object_class_property_add_bool(klass, "fpu", rx_cpu_get_fpu,
+                                   rx_cpu_set_fpu);
+    object_class_property_set_description(klass, "fpu",
+        "Single-precision floating-point unit");
+    object_class_property_add_bool(klass, "dfpu", rx_cpu_get_dfpu,
+                                   rx_cpu_set_dfpu);
+    object_class_property_set_description(klass, "dfpu",
+        "Double-precision floating-point unit (RXv3 and later)");
 }
 
-static const TypeInfo rx_cpu_info = {
-    .name = TYPE_RX_CPU,
-    .parent = TYPE_CPU,
-    .instance_size = sizeof(RXCPU),
-    .instance_align = __alignof(RXCPU),
-    .instance_init = rx_cpu_init,
-    .abstract = true,
-    .class_size = sizeof(RXCPUClass),
-    .class_init = rx_cpu_class_init,
-};
-
-static const TypeInfo rx62n_rx_cpu_info = {
-    .name = TYPE_RX62N_CPU,
-    .parent = TYPE_RX_CPU,
-};
-
-static void rx_cpu_register_types(void)
+/*
+ * The generic models enable the units that LLVM's -mcpu of the same name
+ * assumes: RXv1 cores may lack the FPU (RX100, RX200), RXv2 and later
+ * have it, and RXv3 parts commonly have the double-precision FPU. Use
+ * fpu=on|off and dfpu=on|off to model a particular part.
+ */
+static void rx_cpu_class_init_features(ObjectClass *oc, const void *data)
 {
-    type_register_static(&rx_cpu_info);
-    type_register_static(&rx62n_rx_cpu_info);
+    RX_CPU_CLASS(oc)->features = (uintptr_t)data;
 }
 
-type_init(rx_cpu_register_types)
+#define DEFINE_RX_CPU_TYPE(type, feats)                 \
+    {                                                   \
+        .name = type,                                   \
+        .parent = TYPE_RX_CPU,                          \
+        .class_init = rx_cpu_class_init_features,       \
+        .class_data = (const void *)(uintptr_t)(feats), \
+    }
+
+static const TypeInfo rx_cpu_types[] = {
+    {
+        .name = TYPE_RX_CPU,
+        .parent = TYPE_CPU,
+        .instance_size = sizeof(RXCPU),
+        .instance_align = __alignof(RXCPU),
+        .instance_init = rx_cpu_init,
+        .abstract = true,
+        .class_size = sizeof(RXCPUClass),
+        .class_init = rx_cpu_class_init,
+    },
+    DEFINE_RX_CPU_TYPE(TYPE_RX62N_CPU, RX_FEATURE_FPU),
+    DEFINE_RX_CPU_TYPE(TYPE_RXV1_CPU, 0),
+    DEFINE_RX_CPU_TYPE(TYPE_RXV2_CPU, RX_FEATURE_V2 | RX_FEATURE_FPU),
+    DEFINE_RX_CPU_TYPE(TYPE_RXV3_CPU, RX_FEATURE_V2 | RX_FEATURE_V3 |
+                       RX_FEATURE_FPU | RX_FEATURE_DFPU),
+    DEFINE_RX_CPU_TYPE(TYPE_RXV3E_CPU, RX_FEATURE_V2 | RX_FEATURE_V3 |
+                       RX_FEATURE_V3E | RX_FEATURE_FPU | RX_FEATURE_DFPU),
+};
+
+DEFINE_TYPES(rx_cpu_types)
