@@ -2,6 +2,60 @@
 QEMU README
 ===========
 
+About this fork (CDEF-inc/qemu, branch ``rx/v11.1``)
+====================================================
+
+This is an in-house fork of QEMU 11.1.2 that adds the RXv2, RXv3 and
+RXv3e CPU cores to the RX target. It is the test platform of
+`rx-rust <https://github.com/CDEF-inc/rx-rust>`_, a Rust / LLVM toolchain
+for Renesas RX. The changes are partly AI-generated and are not offered
+to upstream QEMU, whose policy (``docs/devel/code-provenance.rst``)
+declines such contributions. Everything else in this file is upstream's
+README.
+
+What the fork adds to ``qemu-system-rx`` (details in
+``docs/system/target-rx.rst``):
+
+* ``-cpu`` models ``rx62n`` (the default), ``rxv1``, ``rxv2``, ``rxv3``
+  and ``rxv3e``, with ``fpu``, ``dfpu`` and ``banks`` properties;
+* the RXv2 instructions, EXTB, the second accumulator A1 and the RXv2
+  DSP instructions;
+* the RXv3 instructions (``bfmov``, ``bfmovz``, ``save`` / ``rstr``
+  with register banks) and the double-precision FPU (DR0-DR15, DPSW,
+  DCMR, DECNT, DEPC and its 21 instructions);
+* the CPU side of the RXv3e Protect Zone function;
+* fixes found by comparing with real hardware: PSW.U on the switch to
+  user mode, the reserved bits of ``mvtipl`` and of the ``mvfac*``
+  immediate, ``mvtachi`` and the guard bits, the FPSW flags of an
+  underflow with DN = 0, ``ftou`` of negative numbers, the C and Z flags
+  of ``suntil`` / ``swhile``, the displacement scale of ``dmov.d`` and
+  the DPSW writes of ``mvtdc`` / ``dpopm.l``.
+
+The instruction tests are in rx-rust (``test/qemu``,
+``scripts/run-qemu-test.sh``, ``scripts/run-all-tests.sh``). They also run
+on an RX72M (RXv3 with the double-precision FPU, on an AP-RX72M-0A board),
+and QEMU's ``rxv3`` model gives the same results as the board for every
+test that applies to that core; rx-rust's ``docs/NOTES-qemu.md`` lists what differed and how it was
+fixed, and ``docs/NOTES-hw.md`` how the board tests are run.
+
+Building only the RX system emulator:
+
+.. code-block:: shell
+
+  git clone https://github.com/CDEF-inc/qemu -b rx/v11.1
+  cd qemu && mkdir build && cd build
+  ../configure --target-list=rx-softmmu --disable-docs
+  ninja qemu-system-rx
+
+rx-rust's test scripts use ``../qemu/build/qemu-system-rx`` when the fork
+is checked out next to rx-rust.
+
+The fork is licensed like QEMU (GPL-2.0-or-later for the RX changes).
+
+
+About QEMU
+==========
+
 QEMU is a generic and open source machine & userspace emulator and
 virtualizer.
 
