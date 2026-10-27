@@ -92,12 +92,19 @@ static void update_fpsw_flags(CPURXState *env, uint32_t ret, bool integer,
          * Denormals are always flushed. With DN = 1 that is the result: a
          * flushed result is an underflow (without inexact). With DN = 0 a
          * denormal operand or an underflow is unimplemented processing,
-         * which cannot be masked and leaves the destination unchanged.
+         * which cannot be masked and leaves the destination unchanged; an
+         * underflow also sets CU, FU and FS (measured on the RX72M).
          */
         if (xcpt & (float_flag_input_denormal_flushed
                     | float_flag_output_denormal_flushed)
             && !FIELD_EX32(env->fpsw, FPSW, DN)) {
             env->fpsw = FIELD_DP32(env->fpsw, FPSW, CE, 1);
+            if (xcpt & float_flag_output_denormal_flushed) {
+                SET_FPSW(U);
+                if (FIELD_EX32(env->fpsw, FPSW, FLAGS) != 0) {
+                    env->fpsw = FIELD_DP32(env->fpsw, FPSW, FS, 1);
+                }
+            }
             raise_exception(env, 25, retaddr);
         }
         if (xcpt & float_flag_output_denormal_flushed) {
@@ -298,6 +305,10 @@ uint32_t helper_ftou(CPURXState *env, float32 t0)
     ret = float32_to_uint32_round_to_zero(t0, &env->fp_status);
     if (float32_is_any_nan(t0)) {
         ret = nan_to_int(t0, UINT32_MAX, 0);
+    } else if (float32_is_neg(t0) && float32_is_normal(t0)) {
+        /* Every negative normalized number is invalid, -0.5 too */
+        set_float_exception_flags(float_flag_invalid, &env->fp_status);
+        ret = 0;
     }
     update_fpsw_int(env, ret, GETPC());
     return ret;
