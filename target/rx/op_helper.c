@@ -784,14 +784,15 @@ uint32_t helper_mvfac(CPURXState *env, uint32_t a, uint32_t shift,
 }
 
 /*
- * mvtacgu / mvtachi / mvtaclo: replace bits pos+31..pos of A with val. The
- * RXv3 manual ORs in the source sign-extended to 72 bits for mvtacgu and
- * mvtachi, and zero-extended for mvtaclo.
+ * mvtacgu / mvtachi / mvtaclo: replace bits pos+31..pos of A with val.
+ * mvtacgu sign-extends into bits 71..64; mvtachi leaves the guard bits
+ * alone (measured on the RX72M: the RXv3 manual's Operation ORs in the
+ * sign-extended source, its Function text does not).
  */
 void helper_mvtac(CPURXState *env, uint32_t a, uint32_t pos, uint32_t val)
 {
     Int128 field = int128_lshift(int128_make64(0xffffffff), pos);
-    Int128 src = pos ? int128_exts64((int32_t)val) : int128_make64(val);
+    Int128 src = pos == 64 ? int128_exts64((int32_t)val) : int128_make64(val);
 
     acc_set(env, a, int128_or(int128_and(env->acc[a], int128_not(field)),
                               int128_lshift(src, pos)));

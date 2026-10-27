@@ -135,10 +135,13 @@ static int bdsp_s(DisasContext *ctx, int d)
 }
 
 /* Whether the core has all of the RX_FEATURE_* bits in @features */
-/* mvfac* #imm: the high bit of the shift is inverted */
+/*
+ * mvfac* #imm: the high bit of the shift is inverted; the reserved field
+ * 01b acts as #2 (measured on the RX72M)
+ */
 static int mvfac_imm(DisasContext *ctx, int x)
 {
-    return x ^ 2;
+    return x == 1 ? 2 : x ^ 2;
 }
 
 static bool has_feature(DisasContext *ctx, uint32_t features)
@@ -2422,8 +2425,7 @@ DSP_MUL(EMSBA, DSP_E, sub, true)
 #define DSP_MVFAC(name, pos, v2_only)                                   \
     static bool trans_##name(DisasContext *ctx, arg_##name * a)         \
     {                                                                   \
-        if (a->imm == 3 ||                                              \
-            !dsp_allowed(ctx, v2_only || a->imm != 0, a->a)) {         \
+        if (!dsp_allowed(ctx, v2_only || a->imm != 0, a->a)) {         \
             return false;                                               \
         }                                                               \
         gen_helper_mvfac(cpu_regs[a->rd], tcg_env,                      \
@@ -2825,10 +2827,11 @@ static bool trans_MVTIPL(DisasContext *ctx, arg_MVTIPL *a)
 {
     int imm = a->imm;
 
-    /* IPL[4] is RXv3e only, and always 0 in the non-secure world */
-    if (imm > 15 && !has_feature(ctx, RX_FEATURE_V3E)) {
-        return false;
-    }
+    /*
+     * The bits above the IPL field are ignored (measured on the RX72M).
+     * IPL[4] is RXv3e only, and always 0 in the non-secure world.
+     */
+    imm &= has_feature(ctx, RX_FEATURE_V3E) ? 0x1f : 0xf;
     if (ctx_world(ctx) == RX_WORLD_NONSECURE) {
         imm &= 0xf;
     }
