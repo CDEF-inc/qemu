@@ -1341,8 +1341,10 @@ static bool trans_DMOV_dlr(DisasContext *ctx, arg_DMOV_dlr *a)
 }
 
 /*
- * dmov.d drs, dsp[rd] / dmov.d dsp[rs], drd: dsp (scaled by 8) comes
- * before the byte with the DR number in its upper half.
+ * dmov.d drs, dsp[rd] / dmov.d dsp[rs], drd: dsp comes before the byte
+ * with the DR number in its upper half. dsp is scaled by 4, not 8 as the
+ * RXv3 manual's note says (measured on the RX72M; Renesas CC-RX encodes
+ * 8[R7] as dsp 2).
  */
 static int dmov_mem_dr(DisasContext *ctx)
 {
@@ -1361,7 +1363,7 @@ static bool trans_DMOV_dm(DisasContext *ctx, arg_DMOV_dm *a)
         return false;
     }
     mem = tcg_temp_new_i32();
-    addr = rx_index_addr(ctx, mem, a->ld, MO_64, a->rd);
+    addr = rx_index_addr(ctx, mem, a->ld, MO_32, a->rd);
     dr = dmov_mem_dr(ctx);
     if (dr < 0) {
         return false;
@@ -1382,7 +1384,7 @@ static bool trans_DMOV_md(DisasContext *ctx, arg_DMOV_md *a)
         return false;
     }
     mem = tcg_temp_new_i32();
-    addr = rx_index_addr(ctx, mem, a->ld, MO_64, a->rs);
+    addr = rx_index_addr(ctx, mem, a->ld, MO_32, a->rs);
     dr = dmov_mem_dr(ctx);
     if (dr < 0) {
         return false;
