@@ -418,7 +418,11 @@ MOV_ir		1111 1011 rd:4 .. 10			imm=%b2_li_2
 # MOV.<bwl> #imm, [rd]
 MOV_im		1111 1000 rd:4 .. sz:2			dsp=0 imm=%b2_li_2
 # MOV.<bwl> #imm, dsp8[rd]
-MOV_im		1111 1001 rd:4 .. sz:2 dsp:8		imm=%b3_li_10
+{
+  # DMOV.D / DMOV.L #imm, drhd / drld (RXv3, dfpu): the size 3 code
+  DMOV_ir	1111 1001 0000 0011 rd:4 sub:4
+  MOV_im	1111 1001 rd:4 .. sz:2 dsp:8		imm=%b3_li_10
+}
 # MOV.<bwl> #imm, dsp16[rd]
 MOV_im		1111 1010 rd:4 .. sz:2 .... .... .... .... \
 		imm=%b4_li_18 dsp=%b4_dsp_16
@@ -692,6 +696,53 @@ XOR_rrr		1111 1111 0110 .... .... ....		@b3_rd_rs_rs2
 BFMOV		1111 1100 0101 1110 rs:4 rd:4		&rr
 # BFMOVZ #slsb, #dlsb, #width, rs, rd (RXv3)
 BFMOVZ		1111 1100 0101 1010 rs:4 rd:4		&rr
+
+# Double-precision FPU (RXv3, dfpu)
+&drrr		rd rs rs2
+&drr		rd rs
+@b4_drrr	.... .... .... .... rs2:4 .... rd:4 rs:4	&drrr
+@b4_drr		.... .... .... .... rs:4 .... rd:4 ....		&drr
+# DADD / DSUB / DMUL / DDIV drs, drs2, drd
+DADD		0111 0110 1001 0000 .... 0000 .... ....	@b4_drrr
+DSUB		0111 0110 1001 0000 .... 0001 .... ....	@b4_drrr
+DMUL		0111 0110 1001 0000 .... 0010 .... ....	@b4_drrr
+DDIV		0111 0110 1001 0000 .... 0101 .... ....	@b4_drrr
+# DCMPcm drs, drs2
+DCMP		0111 0110 1001 0000 rs2:4 1000 cm:4 rs:4
+# DMOV.D drs, drd / DABS / DNEG drs, drd
+DMOV_dd		0111 0110 1001 0000 .... 1100 .... 0000	@b4_drr
+DABS		0111 0110 1001 0000 .... 1100 .... 0001	@b4_drr
+DNEG		0111 0110 1001 0000 .... 1100 .... 0010	@b4_drr
+# DSQRT / DTOI / DTOU / DTOF / DROUND drs, drd
+DSQRT		0111 0110 1001 0000 .... 1101 .... 0000	@b4_drr
+DTOI		0111 0110 1001 0000 .... 1101 .... 1000	@b4_drr
+DTOU		0111 0110 1001 0000 .... 1101 .... 1001	@b4_drr
+DTOF		0111 0110 1001 0000 .... 1101 .... 1100	@b4_drr
+DROUND		0111 0110 1001 0000 .... 1101 .... 1101	@b4_drr
+# DMOV.D / DMOV.L rs, drhd; DMOV.L rs, drld
+DMOV_rdh	1111 1101 0111 0111 1000 rs:4 rd:4 001 d:1
+DMOV_rdl	1111 1101 0111 0111 1000 rs:4 rd:4 0000
+# FTOD / ITOD / UTOD rs, drd
+FTOD		1111 1101 0111 0111 1000 rs:4 rd:4 1010
+ITOD		1111 1101 0111 0111 1000 rs:4 rd:4 1001
+UTOD		1111 1101 0111 0111 1000 rs:4 rd:4 1101
+# MVTDC rs, dcrd
+MVTDC		1111 1101 0111 0111 1000 rs:4 cr:4 0100
+# DMOV.L drhs / drls, rd
+DMOV_dhr	1111 1101 0111 0101 1000 rd:4 rs:4 0010
+DMOV_dlr	1111 1101 0111 0101 1000 rd:4 rs:4 0000
+# MVFDC dcrs, rd
+MVFDC		1111 1101 0111 0101 1000 rd:4 cr:4 0100
+# MVFDR
+MVFDR		0111 0101 1001 0000 0001 1011
+# DMOV.D drs, dsp[rd] / DMOV.D dsp[rs], drd: the DR byte follows dsp
+DMOV_dm		1111 1100 0111 10 ld:2 rd:4 1000
+DMOV_md		1111 1100 1100 10 ld:2 rs:4 1000
+# DPUSHM.D / DPOPM.D drs-drs2, DPUSHM.L / DPOPM.L dcrs-dcrs2
+DPUSHM_d	0111 0101 1011 0000 rs:4 n:4
+DPOPM_d		0111 0101 1011 1000 rs:4 n:4
+DPUSHM_l	0111 0101 1010 0000 rs:4 n:4
+DPOPM_l		0111 0101 1010 1000 rs:4 n:4
 
 # SAVE #uimm8 / SAVE rs (RXv3)
 SAVE_i		1111 1101 0111 0110 1110 0000 imm:8

@@ -68,6 +68,21 @@ FIELD(FPSW, FX, 30, 1)
 FIELD(FPSW, FLAGS, 26, 4)
 FIELD(FPSW, FS, 31, 1)
 
+/* DPSW define (double-precision FPU; the same layout as the FPSW) */
+REG32(DPSW, 0)
+FIELD(DPSW, DRM, 0, 2)
+FIELD(DPSW, CAUSE, 2, 6)
+FIELD(DPSW, DCE, 7, 1)
+FIELD(DPSW, DDN, 8, 1)
+FIELD(DPSW, ENABLE, 10, 5)
+FIELD(DPSW, FLAGS, 26, 4)
+FIELD(DPSW, DFS, 31, 1)
+
+/* DECNT define */
+REG32(DECNT, 0)
+FIELD(DECNT, EHM, 0, 1)
+FIELD(DECNT, EHS, 16, 1)
+
 enum {
     NUM_REGS = 16,
     RX_MAX_BANKS = 256,         /* save register banks (RXv3) */
@@ -118,6 +133,11 @@ typedef struct CPUArchState {
     Int128 acc[2];              /* accumulators A0 and A1, sign-extended */
     uint32_t extb;              /* exception table register (RXv2) */
     uint32_t li;                /* LI flag of MOVLI / MOVCO (RXv2) */
+    uint64_t dr[16];            /* double-precision FPU (RXv3): DR0-DR15 */
+    uint32_t dpsw;
+    uint32_t dcmr;
+    uint32_t decnt;
+    uint32_t depc;
 
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;
@@ -132,6 +152,7 @@ typedef struct CPUArchState {
     uint32_t ack_irq;           /* execute irq */
     uint32_t ack_ipl;           /* execute ipl */
     float_status fp_status;
+    float_status dfp_status;    /* double-precision FPU */
     qemu_irq ack;               /* Interrupt acknowledge */
 } CPURXState;
 
