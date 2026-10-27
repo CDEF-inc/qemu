@@ -28,6 +28,11 @@ void rx_cpu_unpack_psw(CPURXState *env, uint32_t psw, int rte)
 {
     if (env->psw_pm == 0) {
         env->psw_ipl = FIELD_EX32(psw, PSW, IPL);
+        if (!rx_has_feature(env, RX_FEATURE_V3E) ||
+            rx_world(env) == RX_WORLD_NONSECURE) {
+            /* IPL[4] is RXv3e only, and always 0 in the non-secure world */
+            env->psw_ipl &= 0xf;
+        }
         if (rte) {
             /* PSW.PM can write RTE and RTFI */
             env->psw_pm = FIELD_EX32(psw, PSW, PM);
@@ -39,6 +44,51 @@ void rx_cpu_unpack_psw(CPURXState *env, uint32_t psw, int rte)
     env->psw_s = FIELD_EX32(psw, PSW, S) << 31;
     env->psw_z = 1 - FIELD_EX32(psw, PSW, Z);
     env->psw_c = FIELD_EX32(psw, PSW, C);
+}
+
+/*
+ * RXv3e worlds: the control register idx (RX_WCR_*) of a world. For the
+ * current world that is the register in env; its ISP is R0 while PSW.U
+ * is 0, so callers read and write the ISP through rx_world_isp_*.
+ */
+uint32_t *rx_world_cr(CPURXState *env, int world, int idx)
+{
+    if (world != rx_world(env)) {
+        return &env->world_cr[world][idx];
+    }
+    switch (idx) {
+    case RX_WCR_ISP:
+        return env->psw_u ? &env->isp : &env->regs[0];
+    case RX_WCR_INTB:
+        return &env->intb;
+    case RX_WCR_BPC:
+        return &env->bpc;
+    case RX_WCR_BPSW:
+        return &env->bpsw;
+    case RX_WCR_EXTB:
+        return &env->extb;
+    default:
+        return &env->ivc;
+    }
+}
+
+/* Make another world current, exchanging its banked control registers */
+void rx_world_switch(CPURXState *env, int world)
+{
+    int cur = rx_world(env);
+    int i;
+
+    g_assert(world <= RX_WORLD_NONSECURE);
+    if (world == cur) {
+        return;
+    }
+    for (i = 0; i < RX_WCR_NUM; i++) {
+        uint32_t *reg = rx_world_cr(env, cur, i);
+
+        env->world_cr[cur][i] = *reg;
+        *reg = env->world_cr[world][i];
+    }
+    env->wid = FIELD_DP32(env->wid, WID, WID, world);
 }
 
 void rx_cpu_do_interrupt(CPUState *cs)

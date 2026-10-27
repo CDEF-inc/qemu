@@ -50,7 +50,7 @@ const char *rx_crname(uint8_t cr)
 {
     static const char *cr_names[] = {
         "psw", "pc", "usp", "fpsw", "", "", "", "",
-        "bpsw", "bpc", "isp", "fintv", "intb", "extb", "", ""
+        "bpsw", "bpc", "isp", "fintv", "intb", "extb", "wpri", "wid"
     };
     if (cr >= ARRAY_SIZE(cr_names)) {
         return "illegal";
@@ -144,6 +144,12 @@ static int mvfac_imm(DisasContext *ctx, int x)
 static bool has_feature(DisasContext *ctx, uint32_t features)
 {
     return (ctx->features & features) == features;
+}
+
+/* The current RXv3e world (RX_WORLD_*) */
+static int ctx_world(DisasContext *ctx)
+{
+    return FIELD_EX32(ctx->tb_flags, TB, WORLD);
 }
 
 /* Include the auto-generated decoder. */
@@ -334,8 +340,42 @@ static void psw_cond(DisasCompare *dc, uint32_t cond)
     }
 }
 
+/*
+ * mvfc / pushc of the RXv3e control registers: IVC (5) and WID (15) in
+ * every world (WID.BWID reads as 0 outside the root world), WPRI (14) in
+ * the root and secure worlds (Table 1.1; 0 where not accessible).
+ */
+static void move_from_cr_v3e(DisasContext *ctx, TCGv_i32 ret, int cr)
+{
+    int world = ctx_world(ctx);
+
+    switch (cr) {
+    case 5:
+        tcg_gen_ld_i32(ret, tcg_env, offsetof(CPURXState, ivc));
+        break;
+    case 14:
+        if (world == RX_WORLD_NONSECURE) {
+            tcg_gen_movi_i32(ret, 0);
+        } else {
+            tcg_gen_ld_i32(ret, tcg_env, offsetof(CPURXState, wpri));
+        }
+        break;
+    default:
+        tcg_gen_ld_i32(ret, tcg_env, offsetof(CPURXState, wid));
+        if (world != RX_WORLD_ROOT) {
+            tcg_gen_andi_i32(ret, ret, ~R_WID_BWID_MASK);
+        }
+        break;
+    }
+}
+
 static void move_from_cr(DisasContext *ctx, TCGv_i32 ret, int cr, uint32_t pc)
 {
+    if (cr == 11 && ctx_world(ctx) != RX_WORLD_ROOT) {
+        /* FINTV is not accessible outside the root world */
+        tcg_gen_movi_i32(ret, 0);
+        return;
+    }
     switch (cr) {
     case 0:     /* PSW */
         gen_helper_pack_psw(ret, tcg_env);
@@ -378,6 +418,14 @@ static void move_from_cr(DisasContext *ctx, TCGv_i32 ret, int cr, uint32_t pc)
             break;
         }
         /* fall through */
+    case 5:     /* IVC */
+    case 14:    /* WPRI */
+    case 15:    /* WID */
+        if (has_feature(ctx, RX_FEATURE_V3E) && cr != 13) {
+            move_from_cr_v3e(ctx, ret, cr);
+            break;
+        }
+        /* fall through */
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "Unimplement control register %d", cr);
         /* Unimplement registers return 0 */
@@ -388,6 +436,20 @@ static void move_from_cr(DisasContext *ctx, TCGv_i32 ret, int cr, uint32_t pc)
 
 static void move_to_cr(DisasContext *ctx, TCGv_i32 val, int cr)
 {
+    int world = ctx_world(ctx);
+
+    /*
+     * RXv3e (Table 1.1): FINTV only in the root world, WPRI in the root and
+     * secure worlds, IVC and WID only in supervisor mode in the root world.
+     */
+    if ((cr == 11 && world != RX_WORLD_ROOT) ||
+        (cr == 14 && world == RX_WORLD_NONSECURE) ||
+        ((cr == 5 || cr == 15) &&
+         (world != RX_WORLD_ROOT || !is_privileged(ctx, 0)))) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "disallow control register write %s", rx_crname(cr));
+        return;
+    }
     if (cr >= 8 && !is_privileged(ctx, 0)) {
         /* Some control registers can only be written in privileged mode. */
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -414,7 +476,12 @@ static void move_to_cr(DisasContext *ctx, TCGv_i32 val, int cr)
         gen_helper_set_fpsw(tcg_env, val);
         break;
     case 8:     /* BPSW */
-        tcg_gen_mov_i32(cpu_bpsw, val);
+        if (ctx_world(ctx) == RX_WORLD_NONSECURE) {
+            /* Bit 28 of BPSW_NS is always 0 (PSW.IPL[4] in that world) */
+            tcg_gen_andi_i32(cpu_bpsw, val, ~(1u << 28));
+        } else {
+            tcg_gen_mov_i32(cpu_bpsw, val);
+        }
         break;
     case 9:     /* BPC */
         tcg_gen_mov_i32(cpu_bpc, val);
@@ -435,6 +502,14 @@ static void move_to_cr(DisasContext *ctx, TCGv_i32 val, int cr)
     case 13:    /* EXTB */
         if (has_feature(ctx, RX_FEATURE_V2)) {
             tcg_gen_mov_i32(cpu_extb, val);
+            break;
+        }
+        /* fall through */
+    case 5:     /* IVC */
+    case 14:    /* WPRI */
+    case 15:    /* WID */
+        if (has_feature(ctx, RX_FEATURE_V3E) && cr != 13) {
+            gen_helper_mvtc_v3e(tcg_env, tcg_constant_i32(cr), val);
             break;
         }
         /* fall through */
@@ -2748,8 +2823,17 @@ static bool trans_SETPSW(DisasContext *ctx, arg_SETPSW *a)
 /* mvtipl #imm */
 static bool trans_MVTIPL(DisasContext *ctx, arg_MVTIPL *a)
 {
+    int imm = a->imm;
+
+    /* IPL[4] is RXv3e only, and always 0 in the non-secure world */
+    if (imm > 15 && !has_feature(ctx, RX_FEATURE_V3E)) {
+        return false;
+    }
+    if (ctx_world(ctx) == RX_WORLD_NONSECURE) {
+        imm &= 0xf;
+    }
     if (is_privileged(ctx, 1)) {
-        tcg_gen_movi_i32(cpu_psw_ipl, a->imm);
+        tcg_gen_movi_i32(cpu_psw_ipl, imm);
         ctx->base.is_jmp = DISAS_UPDATE;
     }
     return true;
@@ -2819,16 +2903,118 @@ static bool trans_BRK(DisasContext *ctx, arg_BRK *a)
 }
 
 /* int #imm */
+/* RXv3e: IVC.UIR restricts int in user mode */
+static void gen_int_check(DisasContext *ctx, TCGv_i32 vec, bool is_reg)
+{
+    if (has_feature(ctx, RX_FEATURE_V3E) &&
+        FIELD_EX32(ctx->tb_flags, PSW, PM)) {
+        gen_helper_int_check(tcg_env, vec, tcg_constant_i32(is_reg));
+    }
+}
+
 static bool trans_INT(DisasContext *ctx, arg_INT *a)
 {
     TCGv_i32 vec;
 
     tcg_debug_assert(a->imm < 0x100);
     vec = tcg_constant_i32(a->imm);
+    gen_int_check(ctx, vec, false);
     tcg_gen_movi_i32(cpu_pc, ctx->base.pc_next);
     gen_helper_rxint(tcg_env, vec);
     ctx->base.is_jmp = DISAS_NORETURN;
     return true;
+}
+
+/* int rs (RXv3e): the vector number is the lower 8 bits of rs */
+static bool trans_INT_r(DisasContext *ctx, arg_INT_r *a)
+{
+    TCGv_i32 vec;
+
+    if (!has_feature(ctx, RX_FEATURE_V3E)) {
+        return false;
+    }
+    vec = tcg_temp_new_i32();
+    tcg_gen_andi_i32(vec, cpu_regs[a->rs], 0xff);
+    gen_int_check(ctx, vec, true);
+    tcg_gen_movi_i32(cpu_pc, ctx->base.pc_next);
+    gen_helper_rxint(tcg_env, vec);
+    ctx->base.is_jmp = DISAS_NORETURN;
+    return true;
+}
+
+/* trcall #imm (RXv3e) */
+static bool trans_TRCALL(DisasContext *ctx, arg_TRCALL *a)
+{
+    if (!has_feature(ctx, RX_FEATURE_V3E)) {
+        return false;
+    }
+    if (is_privileged(ctx, 1)) {
+        gen_helper_trcall(tcg_env, tcg_constant_i32(a->imm),
+                          tcg_constant_i32(ctx->base.pc_next));
+        ctx->base.is_jmp = DISAS_EXIT;
+    }
+    return true;
+}
+
+/* trrte, trmvfc and trmvtc are for the root world only (RXv3e) */
+static bool root_only(DisasContext *ctx)
+{
+    return has_feature(ctx, RX_FEATURE_V3E) &&
+           ctx_world(ctx) == RX_WORLD_ROOT;
+}
+
+/* trrte */
+static bool trans_TRRTE(DisasContext *ctx, arg_TRRTE *a)
+{
+    if (!root_only(ctx)) {
+        return false;
+    }
+    if (is_privileged(ctx, 1)) {
+        gen_helper_trrte(tcg_env);
+        ctx->base.is_jmp = DISAS_EXIT;
+    }
+    return true;
+}
+
+/* cr of trmvfc / trmvtc: IVC, BPSW, BPC, ISP, INTB, EXTB, TRCTB, WINTB */
+static bool trmv_cr(int cr)
+{
+    return cr == 5 || (cr >= 8 && cr != 11);
+}
+
+/* trmvfc cr, rd */
+static bool trans_TRMVFC(DisasContext *ctx, arg_TRMVFC *a)
+{
+    if (!root_only(ctx) || !trmv_cr(a->cr)) {
+        return false;
+    }
+    if (is_privileged(ctx, 1)) {
+        gen_helper_trmvfc(cpu_regs[a->rd], tcg_env, tcg_constant_i32(a->cr));
+    }
+    return true;
+}
+
+static bool gen_trmvtc(DisasContext *ctx, int cr, TCGv_i32 val)
+{
+    if (!root_only(ctx) || !trmv_cr(cr)) {
+        return false;
+    }
+    if (is_privileged(ctx, 1)) {
+        gen_helper_trmvtc(tcg_env, tcg_constant_i32(cr), val);
+    }
+    return true;
+}
+
+/* trmvtc rs, cr */
+static bool trans_TRMVTC_r(DisasContext *ctx, arg_TRMVTC_r *a)
+{
+    return gen_trmvtc(ctx, a->cr, cpu_regs[a->rs]);
+}
+
+/* trmvtc #imm, cr */
+static bool trans_TRMVTC_i(DisasContext *ctx, arg_TRMVTC_i *a)
+{
+    return gen_trmvtc(ctx, a->cr, tcg_constant_i32(a->imm));
 }
 
 /* wait */

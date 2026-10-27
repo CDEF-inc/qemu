@@ -53,6 +53,7 @@ static TCGTBCPUState rx_get_tb_cpu_state(CPUState *cs)
 
     flags = FIELD_DP32(flags, PSW, PM, env->psw_pm);
     flags = FIELD_DP32(flags, PSW, U, env->psw_u);
+    flags = FIELD_DP32(flags, TB, WORLD, rx_world(env));
 
     return (TCGTBCPUState){ .pc = env->pc, .flags = flags };
 }
@@ -106,6 +107,7 @@ static void rx_cpu_reset_hold(Object *obj, ResetType type)
     rx_cpu_unpack_psw(env, 0, 1);
     env->regs[0] = env->isp = env->usp = 0;
     env->extb = 0xffffff80;
+    env->trctb = env->wintb = 0x80000000;  /* RXv3e */
     env->fpsw = R_FPSW_DN_MASK;
     set_float_exception_flags(0, &env->fp_status);
     set_flush_to_zero(1, &env->fp_status);

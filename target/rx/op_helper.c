@@ -902,6 +902,138 @@ G_NORETURN void helper_wait(CPURXState *env)
     raise_exception(env, EXCP_HLT, 0);
 }
 
+/*
+ * RXv3e Protect Zone instructions (RXv3e manual 3.5.4). trcall, trrte,
+ * trmvfc and trmvtc are privileged; trrte, trmvfc and trmvtc are for the
+ * root world only (checked at translation).
+ */
+
+/* trcall #imm: an unconditional trap through TRCTB into the root world */
+void helper_trcall(CPURXState *env, uint32_t imm, uint32_t next_pc)
+{
+    uint32_t psw = rx_cpu_pack_psw(env);
+
+    env->wid = FIELD_DP32(env->wid, WID, BWI, env->psw_i);
+    env->wid = FIELD_DP32(env->wid, WID, BWID, rx_world(env));
+    rx_world_switch(env, RX_WORLD_ROOT);
+    if (env->psw_u) {
+        env->usp = env->regs[0];
+        env->regs[0] = env->isp;
+    }
+    env->psw_i = env->psw_u = env->psw_pm = 0;
+    env->regs[0] -= 4;
+    cpu_stl_le_data_ra(env, env->regs[0], psw, GETPC());
+    env->regs[0] -= 4;
+    cpu_stl_le_data_ra(env, env->regs[0], next_pc, GETPC());
+    env->pc = cpu_ldl_le_data_ra(env, env->trctb + imm * 4, GETPC());
+}
+
+/* trrte: return from the root world to the world in WID.BWID */
+void helper_trrte(CPURXState *env)
+{
+    int world = FIELD_EX32(env->wid, WID, BWID);
+    uint32_t pc, psw;
+
+    pc = cpu_ldl_le_data_ra(env, env->regs[0], GETPC());
+    psw = cpu_ldl_le_data_ra(env, env->regs[0] + 4, GETPC());
+    env->regs[0] += 8;
+    if (world == RX_WORLD_NONSECURE) {
+        psw &= 0xefffffff;
+    }
+    rx_world_switch(env, world);
+    env->pc = pc;
+    helper_set_psw_rte(env, psw);
+    env->wid = FIELD_DP32(env->wid, WID, BWID, 0);
+    env->wid = FIELD_DP32(env->wid, WID, BITW, 0);
+    env->wid = FIELD_DP32(env->wid, WID, BWI, 0);
+    env->li = 0;
+}
+
+/* The banked register for cr of trmvfc / trmvtc, or NULL */
+static uint32_t *trmv_reg(CPURXState *env, uint32_t cr)
+{
+    static const int8_t idx[16] = {
+        -1, -1, -1, -1, -1, RX_WCR_IVC, -1, -1, RX_WCR_BPSW, RX_WCR_BPC,
+        RX_WCR_ISP, -1, RX_WCR_INTB, RX_WCR_EXTB, -1, -1,
+    };
+    int world = FIELD_EX32(env->wid, WID, BWID);
+
+    if (cr == 14) {
+        return &env->trctb;
+    } else if (cr == 15) {
+        return &env->wintb;
+    } else if (world < 3 && idx[cr] >= 0) {
+        return rx_world_cr(env, world, idx[cr]);
+    }
+    return NULL;
+}
+
+/* trmvfc cr, rd: the register of the world in WID.BWID */
+uint32_t helper_trmvfc(CPURXState *env, uint32_t cr)
+{
+    uint32_t *reg = trmv_reg(env, cr);
+
+    return reg ? *reg : 0;
+}
+
+/* trmvtc val, cr: the register of the world in WID.BWID */
+void helper_trmvtc(CPURXState *env, uint32_t cr, uint32_t val)
+{
+    int world = FIELD_EX32(env->wid, WID, BWID);
+    uint32_t *reg = trmv_reg(env, cr);
+
+    if (!reg) {
+        return;
+    }
+    if (cr == 5) {
+        /* NSIC and EXCSE are always 0 in IVC_S and IVC_NS */
+        val &= R_IVC_BWINM_MASK | R_IVC_UIR_MASK |
+               (world == RX_WORLD_ROOT ? R_IVC_NSIC_MASK | R_IVC_EXCSE_MASK
+                                       : 0);
+    }
+    if (cr == 8 && world == RX_WORLD_NONSECURE) {
+        val &= ~(1u << 28);             /* BPSW_NS bit 28 is always 0 */
+    }
+    *reg = val;
+}
+
+/*
+ * int in user mode on RXv3e: IVC.UIR = 01 allows only int #0 to #15, and
+ * no int Rs (a privileged instruction exception otherwise).
+ */
+void helper_int_check(CPURXState *env, uint32_t vec, uint32_t is_reg)
+{
+    if (FIELD_EX32(env->ivc, IVC, UIR) == 1 && (is_reg || vec > 15)) {
+        raise_exception(env, 20, GETPC());
+    }
+}
+
+/*
+ * mvtc / popc to the RXv3e control registers IVC (5), WPRI (14) and WID
+ * (15); the translator checks the world and the processor mode.
+ */
+void helper_mvtc_v3e(CPURXState *env, uint32_t cr, uint32_t val)
+{
+    switch (cr) {
+    case 5:
+        env->ivc = val & (R_IVC_BWINM_MASK | R_IVC_UIR_MASK |
+                          R_IVC_NSIC_MASK | R_IVC_EXCSE_MASK);
+        break;
+    case 14:
+        env->wpri = val & R_WPRI_WIPL_MASK;
+        break;
+    default:
+        /* BWID 3 is reserved (there are three worlds); it is not written */
+        if (FIELD_EX32(val, WID, BWID) <= RX_WORLD_NONSECURE) {
+            env->wid = FIELD_DP32(env->wid, WID, BWID,
+                                  FIELD_EX32(val, WID, BWID));
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR, "mvtc: reserved WID.BWID 3\n");
+        }
+        break;
+    }
+}
+
 G_NORETURN void helper_rxint(CPURXState *env, uint32_t vec)
 {
     raise_exception(env, 0x100 + vec, 0);
