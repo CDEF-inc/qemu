@@ -695,8 +695,9 @@ void helper_suntil(CPURXState *env, uint32_t sz)
             break;
         }
     } while (env->regs[3] != 0);
+    /* Z and C from *R1 - R2 of the last comparison (C: no borrow) */
     env->psw_z = tmp - env->regs[2];
-    env->psw_c = (tmp <= env->regs[2]);
+    env->psw_c = (tmp >= env->regs[2]);
 }
 
 void helper_swhile(CPURXState *env, uint32_t sz)
@@ -714,8 +715,12 @@ void helper_swhile(CPURXState *env, uint32_t sz)
             break;
         }
     } while (env->regs[3] != 0);
-    env->psw_z = env->regs[3];
-    env->psw_c = (tmp <= env->regs[2]);
+    /*
+     * Z: all matched, i.e. the last comparison too (R3 is also 0 when only
+     * the last one differs); C from *R1 - R2 (no borrow).
+     */
+    env->psw_z = tmp - env->regs[2];
+    env->psw_c = (tmp >= env->regs[2]);
 }
 
 /* accumulator operations */
