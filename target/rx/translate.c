@@ -1000,6 +1000,117 @@ static bool trans_XOR_mr(DisasContext *ctx, arg_XOR_mr *a)
     return true;
 }
 
+/* xor rs,rs2,rd */
+static bool trans_XOR_rrr(DisasContext *ctx, arg_XOR_rrr *a)
+{
+    if (!has_feature(ctx, RX_FEATURE_V3)) {
+        return false;
+    }
+    rx_gen_op_rrr(rx_xor, a->rd, a->rs, a->rs2);
+    return true;
+}
+
+/*
+ * bfmov / bfmovz #slsb, #dlsb, #width, rs, rd: width bits at slsb of rs
+ * to dlsb of rd. The operands are encoded in #imm16 as
+ * ((dlsb + width) & 31) << 10 | dlsb << 5 | ((dlsb - slsb) & 31); width
+ * is 1 to 31 (0 here moves nothing).
+ */
+static void rx_bfmov(DisasContext *ctx, int rs, int rd, bool zero)
+{
+    uint32_t imm = li(ctx, 2) & 0xffff;
+    int dlsb = extract32(imm, 5, 5);
+    int slsb = (dlsb - extract32(imm, 0, 5)) & 31;
+    int width = (extract32(imm, 10, 5) - dlsb) & 31;
+    uint32_t mask = (uint32_t)(MAKE_64BIT_MASK(0, width) << dlsb);
+    TCGv_i32 val = tcg_temp_new_i32();
+
+    tcg_gen_shri_i32(val, cpu_regs[rs], slsb);
+    tcg_gen_shli_i32(val, val, dlsb);
+    tcg_gen_andi_i32(val, val, mask);
+    if (zero) {
+        tcg_gen_mov_i32(cpu_regs[rd], val);
+    } else {
+        tcg_gen_andi_i32(cpu_regs[rd], cpu_regs[rd], ~mask);
+        tcg_gen_or_i32(cpu_regs[rd], cpu_regs[rd], val);
+    }
+}
+
+static bool trans_BFMOV(DisasContext *ctx, arg_BFMOV *a)
+{
+    if (!has_feature(ctx, RX_FEATURE_V3)) {
+        return false;
+    }
+    rx_bfmov(ctx, a->rs, a->rd, false);
+    return true;
+}
+
+static bool trans_BFMOVZ(DisasContext *ctx, arg_BFMOVZ *a)
+{
+    if (!has_feature(ctx, RX_FEATURE_V3)) {
+        return false;
+    }
+    rx_bfmov(ctx, a->rs, a->rd, true);
+    return true;
+}
+
+/*
+ * save / rstr: the register bank save function, optional on RXv3 cores
+ * (the CPU property banks; 0 makes the instructions undefined).
+ */
+static bool rx_reg_banks(DisasContext *ctx)
+{
+    return has_feature(ctx, RX_FEATURE_V3) && ctx->env->nr_banks;
+}
+
+/* save #uimm8 */
+static bool trans_SAVE_i(DisasContext *ctx, arg_SAVE_i *a)
+{
+    if (!rx_reg_banks(ctx)) {
+        return false;
+    }
+    if (is_privileged(ctx, 1)) {
+        gen_helper_save(tcg_env, tcg_constant_i32(a->imm));
+    }
+    return true;
+}
+
+/* save rs */
+static bool trans_SAVE_r(DisasContext *ctx, arg_SAVE_r *a)
+{
+    if (!rx_reg_banks(ctx)) {
+        return false;
+    }
+    if (is_privileged(ctx, 1)) {
+        gen_helper_save(tcg_env, cpu_regs[a->rs]);
+    }
+    return true;
+}
+
+/* rstr #uimm8 */
+static bool trans_RSTR_i(DisasContext *ctx, arg_RSTR_i *a)
+{
+    if (!rx_reg_banks(ctx)) {
+        return false;
+    }
+    if (is_privileged(ctx, 1)) {
+        gen_helper_rstr(tcg_env, tcg_constant_i32(a->imm));
+    }
+    return true;
+}
+
+/* rstr rs */
+static bool trans_RSTR_r(DisasContext *ctx, arg_RSTR_r *a)
+{
+    if (!rx_reg_banks(ctx)) {
+        return false;
+    }
+    if (is_privileged(ctx, 1)) {
+        gen_helper_rstr(tcg_env, cpu_regs[a->rs]);
+    }
+    return true;
+}
+
 static void rx_tst(TCGv_i32 ret, TCGv_i32 arg1, TCGv_i32 arg2)
 {
     tcg_gen_and_i32(cpu_psw_s, arg1, arg2);
