@@ -70,7 +70,12 @@ uint32_t helper_pack_psw(CPURXState *env)
     } while (0)
 
 /* fp operations */
-static void update_fpsw(CPURXState *env, float32 ret, uintptr_t retaddr)
+/*
+ * Update FPSW, then Z and S from the result: a floating-point result
+ * sets Z for +0 and -0, an integer one (ftoi, round, ftou) only for 0.
+ */
+static void update_fpsw_flags(CPURXState *env, uint32_t ret, bool integer,
+                              uintptr_t retaddr)
 {
     int xcpt, cause, enable;
 
@@ -132,8 +137,18 @@ static void update_fpsw(CPURXState *env, float32 ret, uintptr_t retaddr)
         }
     }
 
-    env->psw_z = ret & ~(1 << 31); /* mask sign bit */
+    env->psw_z = integer ? ret : ret & ~(1 << 31);
     env->psw_s = ret;
+}
+
+static void update_fpsw(CPURXState *env, float32 ret, uintptr_t retaddr)
+{
+    update_fpsw_flags(env, ret, false, retaddr);
+}
+
+static void update_fpsw_int(CPURXState *env, uint32_t ret, uintptr_t retaddr)
+{
+    update_fpsw_flags(env, ret, true, retaddr);
 }
 
 void helper_set_fpsw(CPURXState *env, uint32_t val)
@@ -204,7 +219,7 @@ uint32_t helper_ftoi(CPURXState *env, float32 t0)
     if (float32_is_any_nan(t0)) {
         ret = nan_to_int(t0, INT32_MAX, INT32_MIN);
     }
-    update_fpsw(env, ret, GETPC());
+    update_fpsw_int(env, ret, GETPC());
     return ret;
 }
 
@@ -215,7 +230,7 @@ uint32_t helper_round(CPURXState *env, float32 t0)
     if (float32_is_any_nan(t0)) {
         ret = nan_to_int(t0, INT32_MAX, INT32_MIN);
     }
-    update_fpsw(env, ret, GETPC());
+    update_fpsw_int(env, ret, GETPC());
     return ret;
 }
 
@@ -226,7 +241,7 @@ uint32_t helper_ftou(CPURXState *env, float32 t0)
     if (float32_is_any_nan(t0)) {
         ret = nan_to_int(t0, UINT32_MAX, 0);
     }
-    update_fpsw(env, ret, GETPC());
+    update_fpsw_int(env, ret, GETPC());
     return ret;
 }
 
