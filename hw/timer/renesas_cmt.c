@@ -48,6 +48,11 @@ REG16(CMSTR, 0)
 REG16(CMCR, 0)
   FIELD(CMCR, CKS,  0, 2)
   FIELD(CMCR, CMIE, 6, 1)
+  /*
+   * Bit 7 reads as 1 after a compare match (with or without CMIE) until
+   * CMCR is written, on an RX72M; it cannot be written as 1.
+   */
+  FIELD(CMCR, CMF,  7, 1)
 REG16(CMCNT, 2)
 REG16(CMCOR, 4)
 
@@ -99,9 +104,18 @@ static uint16_t cmt_count(RCMTState *cmt, int ch, int64_t now)
     return (counts - to_match) % (cmt->cmcor[ch] + 1);
 }
 
-/* Make cmcnt[ch] the value at now and count from there. */
+/* Whether a compare match came between tick[ch] and now */
+static bool cmt_matched(RCMTState *cmt, int ch, int64_t now)
+{
+    return cmt_counts(cmt, ch, now) >= cmt_counts_to_match(cmt, ch);
+}
+
+/* Make cmcnt[ch] (and CMCR.CMF) the value at now and count from there. */
 static void cmt_sync(RCMTState *cmt, int ch, int64_t now)
 {
+    if (cmt_matched(cmt, ch, now)) {
+        cmt->cmcr[ch] = FIELD_DP16(cmt->cmcr[ch], CMCR, CMF, 1);
+    }
     cmt->cmcnt[ch] = cmt_count(cmt, ch, now);
     cmt->tick[ch] = now;
 }
@@ -146,8 +160,12 @@ static uint64_t cmt_read(void *opaque, hwaddr offset, unsigned size)
         }
         switch (offset) {
         case A_CMCR:
-            /* Only CKS and CMIE are kept; the other bits read as 0. */
-            return cmt->cmcr[ch];
+            /* CKS, CMIE and CMF; the other bits read as 0. */
+            ret = cmt->cmcr[ch];
+            if (cmt_matched(cmt, ch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL))) {
+                ret = FIELD_DP16(ret, CMCR, CMF, 1);
+            }
+            return ret;
         case A_CMCNT:
             return cmt_count(cmt, ch, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
         case A_CMCOR:
@@ -194,8 +212,9 @@ static void cmt_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
         }
         switch (offset) {
         case A_CMCR:
+            /* A write keeps CKS and CMIE and clears CMF. */
             cmt_sync(cmt, ch, now);
-            cmt->cmcr[ch] = FIELD_DP16(cmt->cmcr[ch], CMCR, CKS,
+            cmt->cmcr[ch] = FIELD_DP16(0, CMCR, CKS,
                                        FIELD_EX16(val, CMCR, CKS));
             cmt->cmcr[ch] = FIELD_DP16(cmt->cmcr[ch], CMCR, CMIE,
                                        FIELD_EX16(val, CMCR, CMIE));
