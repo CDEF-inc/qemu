@@ -27,6 +27,7 @@
 #include "qapi/error.h"
 #include "exec/icount.h"
 #include "hw/core/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "system/address-spaces.h"
 #include "system/memory.h"
 #include "system/runstate.h"
@@ -48,6 +49,8 @@ struct HakoniwaAssetState {
 
     MemoryRegion mmio;
     QEMUTimer *timer;
+    /* Virtual time of the next step boundary, step * delta_us exactly. */
+    int64_t deadline_ns;
     QemuThread thread;
     /* QEMU -> asset thread: the guest has run up to the step boundary. */
     QemuSemaphore guest_done;
@@ -161,8 +164,13 @@ static void hako_timer_cb(void *opaque)
         qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_UI);
         return;
     }
-    timer_mod(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                        (int64_t)s->delta_us * SCALE_US);
+    /*
+     * icount rounds the vCPU budget up to whole instructions, so the timer
+     * can fire a little late. Step from the deadline, not from now, so that
+     * the lateness does not add up while Hakoniwa moves by exactly delta.
+     */
+    s->deadline_ns += (int64_t)s->delta_us * SCALE_US;
+    timer_mod(s->timer, s->deadline_ns);
 }
 
 static uint64_t hako_mmio_read(void *opaque, hwaddr addr, unsigned size)
@@ -238,7 +246,8 @@ static void hako_realize(DeviceState *dev, Error **errp)
     qemu_sem_init(&s->step_go, 0);
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, hako_timer_cb, s);
     /* The first step waits at time 0, before the guest runs at all. */
-    timer_mod(s->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    s->deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    timer_mod(s->timer, s->deadline_ns);
     qemu_thread_create(&s->thread, "hakoniwa", hako_thread_fn, s,
                        QEMU_THREAD_DETACHED);
 }
@@ -255,11 +264,21 @@ static const Property hako_props[] = {
     DEFINE_PROP_UINT32("out-size", HakoniwaAssetState, out_size, 8),
 };
 
+/*
+ * The Hakoniwa session outside QEMU cannot be saved or rewound with the
+ * guest, so migration and snapshots would silently break the simulation.
+ */
+static const VMStateDescription vmstate_hako = {
+    .name = TYPE_HAKONIWA_ASSET,
+    .unmigratable = 1,
+};
+
 static void hako_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = hako_realize;
+    dc->vmsd = &vmstate_hako;
     device_class_set_props(dc, hako_props);
     dc->desc = "Hakoniwa asset bridge";
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
