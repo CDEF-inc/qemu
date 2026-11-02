@@ -1376,6 +1376,10 @@ if host_os != 'windows'
   endif
 endif
 
+# Hakoniwa asset runtime; point --extra-cflags/--extra-ldflags at its install.
+hakoniwa = cc.find_library('assets', has_headers: ['hako_asset.h'],
+                           required: false)
+
 libiscsi = not_found
 if not get_option('libiscsi').auto() or have_block
   libiscsi = dependency('libiscsi', version: '>=1.9.0',
@@ -5009,6 +5013,7 @@ summary_info += {'libudev':           libudev}
 summary_info += {'FUSE lseek':        fuse_lseek.found()}
 summary_info += {'selinux':           selinux}
 summary_info += {'libdw':             libdw}
+summary_info += {'hakoniwa':          hakoniwa}
 if host_os == 'freebsd'
   summary_info += {'libinotify-kqueue': inotify}
 endif
