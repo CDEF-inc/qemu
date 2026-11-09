@@ -238,6 +238,8 @@ hwaddr rx_cpu_get_phys_addr_debug(CPUState *cpu, vaddr addr);
 void rx_cpu_dump_state(CPUState *cpu, FILE *f, int flags);
 int rx_cpu_gdb_read_register(CPUState *cpu, GByteArray *buf, int reg);
 int rx_cpu_gdb_write_register(CPUState *cpu, uint8_t *buf, int reg);
+void rx_cpu_register_gdb_regs(CPUState *cs);
+void rx_cpu_set_dpsw(CPURXState *env, uint32_t dpsw);
 
 void rx_translate_init(void);
 void rx_translate_code(CPUState *cs, TranslationBlock *tb,

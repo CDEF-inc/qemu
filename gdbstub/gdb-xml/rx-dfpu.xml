@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<!-- The RXv3 double-precision FPU (DFPU) registers.
+
+     Copying and distribution of this file, with or without modification,
+     are permitted in any medium without royalty provided the copyright
+     notice and this notice are preserved.  -->
+
+<!DOCTYPE feature SYSTEM "gdb-target.dtd">
+<feature name="org.gnu.gdb.rx.dfpu">
+  <reg name="dr0" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr1" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr2" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr3" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr4" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr5" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr6" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr7" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr8" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr9" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr10" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr11" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr12" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr13" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr14" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dr15" bitsize="64" type="ieee_double" group="dfpu"/>
+  <reg name="dpsw" bitsize="32" type="uint32" group="dfpu"/>
+  <reg name="dcmr" bitsize="32" type="uint32" group="dfpu"/>
+  <reg name="decnt" bitsize="32" type="uint32" group="dfpu"/>
+  <reg name="depc" bitsize="32" type="code_ptr" group="dfpu"/>
+</feature>

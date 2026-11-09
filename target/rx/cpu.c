@@ -195,6 +195,7 @@ static void rx_cpu_realize(DeviceState *dev, Error **errp)
         return;
     }
 
+    rx_cpu_register_gdb_regs(cs);
     qemu_init_vcpu(cs);
     cpu_reset(cs);
 

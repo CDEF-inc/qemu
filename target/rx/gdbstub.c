@@ -17,6 +17,7 @@
  */
 #include "qemu/osdep.h"
 #include "cpu.h"
+#include "exec/gdbstub.h"
 #include "gdbstub/helpers.h"
 
 int rx_cpu_gdb_read_register(CPUState *cs, GByteArray *mem_buf, int n)
@@ -106,4 +107,57 @@ int rx_cpu_gdb_write_register(CPUState *cs, uint8_t *mem_buf, int n)
     }
 
     return 4;
+}
+
+/* The DFPU's registers (rx-dfpu.xml): dr0-dr15, dpsw, dcmr, decnt, depc. */
+static int rx_dfpu_gdb_get_reg(CPUState *cs, GByteArray *mem_buf, int n)
+{
+    CPURXState *env = cpu_env(cs);
+
+    switch (n) {
+    case 0 ... 15:
+        return gdb_get_reg64(mem_buf, env->dr[n]);
+    case 16:
+        return gdb_get_reg32(mem_buf, env->dpsw);
+    case 17:
+        return gdb_get_reg32(mem_buf, env->dcmr);
+    case 18:
+        return gdb_get_reg32(mem_buf, env->decnt);
+    case 19:
+        return gdb_get_reg32(mem_buf, env->depc);
+    }
+    return 0;
+}
+
+static int rx_dfpu_gdb_set_reg(CPUState *cs, uint8_t *mem_buf, int n)
+{
+    CPURXState *env = cpu_env(cs);
+
+    switch (n) {
+    case 0 ... 15:
+        env->dr[n] = ldq_le_p(mem_buf);
+        return 8;
+    case 16:
+        /* As written, but with DFS and the rounding mode kept in step. */
+        rx_cpu_set_dpsw(env, ldl_le_p(mem_buf));
+        return 4;
+    case 17:
+        env->dcmr = ldl_le_p(mem_buf) & 1;
+        return 4;
+    case 18:
+        env->decnt = ldl_le_p(mem_buf) & (R_DECNT_EHM_MASK | R_DECNT_EHS_MASK);
+        return 4;
+    case 19:
+        env->depc = ldl_le_p(mem_buf);
+        return 4;
+    }
+    return 0;
+}
+
+void rx_cpu_register_gdb_regs(CPUState *cs)
+{
+    if (rx_has_feature(cpu_env(cs), RX_FEATURE_DFPU)) {
+        gdb_register_coprocessor(cs, rx_dfpu_gdb_get_reg, rx_dfpu_gdb_set_reg,
+                                 gdb_find_static_feature("rx-dfpu.xml"));
+    }
 }
