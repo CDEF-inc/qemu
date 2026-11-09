@@ -356,6 +356,12 @@ static void set_dpsw(CPURXState *env, uint32_t dpsw)
     set_rounding(&env->dfp_status, FIELD_EX32(dpsw, DPSW, DRM));
 }
 
+/* For the gdbstub: the DPSW as written, with DFS and the rounding mode. */
+void rx_cpu_set_dpsw(CPURXState *env, uint32_t dpsw)
+{
+    set_dpsw(env, dpsw);
+}
+
 /*
  * Update the DPSW after an operation (RXv3 manual 1.10.3). Returns false
  * when the destination must be left unchanged: an exception whose DEj is
