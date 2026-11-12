@@ -18,6 +18,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "cpu.h"
+#include "hw/hexagon/hexagon_hlx.h"
 #include "internal.h"
 #include "tcg/tcg-op.h"
 #include "tcg/tcg-op-gvec.h"
@@ -32,10 +33,11 @@
 #undef QEMU_GENERATE
 #include "gen_tcg.h"
 #include "gen_tcg_hvx.h"
+#include "gen_tcg_hmx.h"
 #ifndef CONFIG_USER_ONLY
 #include "gen_tcg_sys.h"
 #endif
-
+#include "hlx_gvec_tables.h"
 #include "genptr.h"
 
 static void gen_sabsdiff_i32(TCGv_i32 d, TCGv_i32 a, TCGv_i32 b)
@@ -287,7 +289,7 @@ static const uint32_t sreg_immut_masks[NUM_SREGS] = {
     [HEX_SREG_STID] = 0xff00ff00,
     [HEX_SREG_ELR] = 0x00000003,
     [HEX_SREG_SSR] = 0x00008000,
-    [HEX_SREG_CCR] = 0x10e0ff24,
+    [HEX_SREG_CCR] = 0x00c0ff24,
     [HEX_SREG_HTID] = IMMUTABLE,
     [HEX_SREG_GEVB] = 0x000000ff,
 };
@@ -300,15 +302,14 @@ static void gen_log_sreg_write(DisasContext *ctx, int rnum, TCGv_i32 val)
     if (rnum == HEX_SREG_MODECTL || rnum == HEX_SREG_SYSCFG) {
         translator_io_start(&ctx->base);
     }
-    if (rnum == HEX_SREG_IMASK &&
-        ctx->hex_def->hex_version < HEX_VER_V81) {
-        reg_mask = 0xffff0000;
-    }
-
     if (reg_mask != IMMUTABLE) {
-        if (rnum < HEX_SREG_GLB_START) {
+        if (rnum == HEX_SREG_IMASK) {
+            /* Commit through a helper to serialize with iassignw/setimask. */
+            tcg_gen_mov_i32(ctx->t_sreg_new_value[rnum], val);
+        } else if (rnum < HEX_SREG_GLB_START) {
             gen_masked_reg_write(val, hex_t_sreg[rnum], reg_mask);
-            if (ctx->need_commit || rnum == HEX_SREG_SSR) {
+            if (ctx->need_commit || rnum == HEX_SREG_SSR ||
+                rnum == HEX_SREG_CCR) {
                 tcg_gen_mov_i32(ctx->t_sreg_new_value[rnum], val);
             } else {
                 tcg_gen_mov_i32(hex_t_sreg[rnum], val);
@@ -340,7 +341,8 @@ static void gen_read_sreg(DisasContext *ctx, TCGv_i32 dst, int reg_num)
         reg_num == HEX_SREG_PCYCLELO || reg_num == HEX_SREG_PCYCLEHI) {
         translator_io_start(&ctx->base);
     }
-    if (reg_num >= HEX_SREG_GLB_START || reg_num == HEX_SREG_BADVA) {
+    if (reg_num >= HEX_SREG_GLB_START || reg_num == HEX_SREG_BADVA ||
+        reg_num == HEX_SREG_IMASK) {
         gen_helper_sreg_read(dst, tcg_env, tcg_constant_i32(reg_num));
     } else {
         tcg_gen_mov_i32(dst, hex_t_sreg[reg_num]);
@@ -353,7 +355,9 @@ static void gen_read_sreg_pair(DisasContext *ctx, TCGv_i64 dst, int reg_num)
     if (reg_num == HEX_SREG_TIMERLO || reg_num == HEX_SREG_PCYCLELO) {
         translator_io_start(&ctx->base);
     }
-    if (reg_num < HEX_SREG_GLB_START) {
+    if (reg_num == HEX_SREG_IMASK) {
+        gen_helper_sreg_read_pair(dst, tcg_env, tcg_constant_i32(reg_num));
+    } else if (reg_num < HEX_SREG_GLB_START) {
         if (reg_num + 1 == HEX_SREG_BADVA) {
             TCGv_i32 badva = tcg_temp_new_i32();
             gen_helper_sreg_read(badva, tcg_env,
@@ -552,7 +556,12 @@ static inline void gen_write_ctrl_reg(DisasContext *ctx, int reg_num,
     if (reg_num == HEX_REG_P3_0_ALIASED) {
         gen_write_p3_0(ctx, val);
     } else {
-        const target_ulong reg_mask = reg_immut_masks[reg_num];
+        target_ulong reg_mask = reg_immut_masks[reg_num];
+        if (reg_num == HEX_REG_USR &&
+            ctx->hex_def->hex_version >= HEX_VER_V79) {
+            /* USR.FPSAT is reserved before v79 */
+            reg_mask &= ~fGET_REG_FIELD_MASK(USR_FPSAT);
+        }
         gen_masked_reg_write(val, hex_gpr[reg_num], reg_mask);
         tcg_gen_mov_tl(get_result_gpr(ctx, reg_num), val);
         if (reg_num == HEX_REG_QEMU_PKT_CNT) {
@@ -698,14 +707,58 @@ static inline void gen_store_conditional8(DisasContext *ctx,
     tcg_gen_movi_tl(hex_llsc_addr, ~0);
 }
 
-#ifndef CONFIG_HEXAGON_IDEF_PARSER
-static TCGv gen_slotval(DisasContext *ctx)
+void gen_atomic4(DisasContext *ctx, TCGv dest, TCGv vaddr, TCGv src,
+                 HexAtomicOp operation)
 {
-    int slotval =
-        (ctx->pkt.pkt_has_scalar_store_s1 & 1) | (ctx->insn->slot << 1);
-    return tcg_constant_tl(slotval);
+    MemOp memop = MO_LE | MO_32 | MO_ALIGN;
+
+    switch (operation) {
+    case HEX_ATOMIC_ADD:
+        tcg_gen_atomic_fetch_add_tl(dest, vaddr, src, ctx->mem_idx, memop);
+        break;
+    case HEX_ATOMIC_AND:
+        tcg_gen_atomic_fetch_and_tl(dest, vaddr, src, ctx->mem_idx, memop);
+        break;
+    case HEX_ATOMIC_OR:
+        tcg_gen_atomic_fetch_or_tl(dest, vaddr, src, ctx->mem_idx, memop);
+        break;
+    case HEX_ATOMIC_XOR:
+        tcg_gen_atomic_fetch_xor_tl(dest, vaddr, src, ctx->mem_idx, memop);
+        break;
+    case HEX_ATOMIC_SWAP:
+        tcg_gen_atomic_xchg_tl(dest, vaddr, src, ctx->mem_idx, memop);
+        break;
+    default:
+        g_assert_not_reached();
+    }
 }
+
+void gen_atomic8(DisasContext *ctx, TCGv_i64 dest, TCGv vaddr, TCGv_i64 src)
+{
+    tcg_gen_atomic_xchg_i64(dest, vaddr, src, ctx->mem_idx,
+                            MO_LE | MO_64 | MO_ALIGN);
+}
+
+void gen_vframecheck(DisasContext *ctx, TCGv vsp)
+{
+    TCGLabel *write_vsp = gen_new_label();
+
+#ifndef CONFIG_USER_ONLY
+    TCGv mode = tcg_temp_new();
+
+    tcg_gen_andi_tl(mode, hex_t_sreg[HEX_SREG_SSR],
+                    1 << reg_field_info[SSR_EX].offset);
+    tcg_gen_brcondi_tl(TCG_COND_NE, mode, 0, write_vsp);
+    tcg_gen_andi_tl(mode, hex_t_sreg[HEX_SREG_SSR],
+                    1 << reg_field_info[SSR_UM].offset);
+    tcg_gen_brcondi_tl(TCG_COND_EQ, mode, 0, write_vsp);
 #endif
+    tcg_gen_brcond_tl(TCG_COND_GEU, vsp,
+                      hex_gpr[HEX_REG_VFRAMELIMIT], write_vsp);
+    gen_precise_exception(HEX_CAUSE_VECTOR_STACK_OVERFLOW, ctx->pkt.pc);
+    gen_set_label(write_vsp);
+    tcg_gen_mov_tl(hex_gpr[HEX_REG_VSP], vsp);
+}
 
 void gen_store32(TCGv vaddr, TCGv src, uint32_t width, uint32_t slot)
 {
@@ -1006,6 +1059,8 @@ static void gen_call(DisasContext *ctx, int pc_off)
 static void gen_callr(DisasContext *ctx, TCGv new_pc)
 {
     TCGv lr = get_result_gpr(ctx, HEX_REG_LR);
+
+    new_pc = gen_unalias_gpr_src(new_pc, lr);
     tcg_gen_movi_tl(lr, ctx->next_PC);
     gen_write_new_pc_addr(ctx, new_pc, TCG_COND_ALWAYS, NULL);
 }
@@ -1027,6 +1082,42 @@ static void gen_cond_callr(DisasContext *ctx,
     TCGLabel *skip = gen_new_label();
     tcg_gen_brcondi_tl(cond, pred, 1, skip);
     gen_callr(ctx, new_pc);
+    gen_set_label(skip);
+}
+
+static void gen_set_cfi(DisasContext *ctx)
+{
+    fSET_CFI(tcg_constant_i32(1));
+}
+
+static void gen_reset_cfi(DisasContext *ctx)
+{
+    fSET_CFI(tcg_constant_i32(0));
+}
+
+/* Indirect transfers through LR are returns, which do not set the CFI state */
+static void gen_set_cfi_for_target(DisasContext *ctx, int rs_num)
+{
+    if (rs_num == HEX_REG_LR) {
+        gen_reset_cfi(ctx);
+    } else {
+        gen_set_cfi(ctx);
+    }
+}
+
+/*
+ * Update the CFI state if the predicate (true if @sense, else false) holds.
+ * @rs_num is the jump target register, or -1 for calls.
+ */
+static void gen_cond_set_cfi(DisasContext *ctx, bool sense, TCGv pred,
+                             int rs_num)
+{
+    TCGv lsb = tcg_temp_new();
+    TCGLabel *skip = gen_new_label();
+
+    tcg_gen_andi_tl(lsb, pred, 1);
+    tcg_gen_brcondi_tl(sense ? TCG_COND_EQ : TCG_COND_NE, lsb, 0, skip);
+    gen_set_cfi_for_target(ctx, rs_num);
     gen_set_label(skip);
 }
 
@@ -1763,8 +1854,4 @@ void gen_add_sat_i64(DisasContext *ctx, TCGv_i64 ret, TCGv_i64 a, TCGv_i64 b)
 }
 
 #include "tcg_funcs_generated.c.inc"
-const SemanticInsn opcode_genptr[XX_LAST_OPCODE] = {
-#define OPCODE(X)    [X] = generate_##X
-#include "opcodes_def_generated.h.inc"
-#undef OPCODE
-};
+#include "tcg_func_table_generated.c.inc"

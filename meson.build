@@ -78,6 +78,7 @@ have_user = have_linux_user or have_bsd_user
 ############
 
 sh = find_program('sh')
+git = find_program('git', required: false)
 python = import('python').find_installation()
 
 cc = meson.get_compiler('c')
@@ -2759,6 +2760,12 @@ config_host_data.set('HAVE_STRUCT_STAT_ST_ATIM',
 config_host_data.set('HAVE_BLK_ZONE_REP_CAPACITY',
                      cc.has_member('struct blk_zone', 'capacity',
                                    prefix: '#include <linux/blkzoned.h>'))
+config_host_data.set('HAVE_STRUCT_RT_METRICS_RMX_METRIC',
+                     cc.has_member('struct rt_metrics', 'rmx_metric',
+                                   prefix: '''
+                                       #include <sys/types.h>
+                                       #include <sys/socket.h>
+                                       #include <net/route.h>'''))
 
 # has_type
 config_host_data.set('CONFIG_IOVEC',
@@ -3032,6 +3039,14 @@ config_host_data.set('CONFIG_ELF_AUX_INFO', cc.links(osdep_prefix + '''
     unsigned long hwcap = 0;
     elf_aux_info(AT_HWCAP, &hwcap, sizeof(hwcap));
     return hwcap;
+  }'''))
+
+config_host_data.set('CONFIG_GETEXECPATH', cc.links(osdep_prefix + '''
+  #include <limits.h>
+  #include <unistd.h>
+  int main(void) {
+    char buf[PATH_MAX];
+    getexecpath(buf, sizeof(buf));
   }'''))
 
 config_host_data.set('CONFIG_USBFS', have_linux_user and cc.compiles('''
@@ -3516,6 +3531,7 @@ qapi_gen_depends = [ meson.current_source_dir() / 'scripts/qapi/__init__.py',
                      meson.current_source_dir() / 'scripts/qapi/parser.py',
                      meson.current_source_dir() / 'scripts/qapi/schema.py',
                      meson.current_source_dir() / 'scripts/qapi/source.py',
+                     meson.current_source_dir() / 'scripts/qapi/type_infos.py',
                      meson.current_source_dir() / 'scripts/qapi/types.py',
                      meson.current_source_dir() / 'scripts/qapi/visit.py',
                      meson.current_source_dir() / 'scripts/qapi-gen.py'
@@ -3545,15 +3561,25 @@ tracetool_depends = files(
   'scripts/tracetool/__init__.py',
 )
 
-qemu_version_cmd = [find_program('scripts/qemu-version.sh'),
-                    meson.current_source_dir(),
-                    get_option('pkgversion'), meson.project_version()]
-qemu_version = custom_target('qemu-version.h',
-                             output: 'qemu-version.h',
-                             command: qemu_version_cmd,
-                             capture: true,
-                             build_by_default: true,
-                             build_always_stale: true)
+qemu_pkgversion = get_option('pkgversion')
+git_describe_version = [git, 'describe', '--match', 'v*', '--dirty']
+if qemu_pkgversion == '' and git.found() and fs.exists('.git') and \
+    run_command(git_describe_version, check: false).returncode() == 0
+  # Refresh the version at build time, so that "make" after a commit updates it.
+  qemu_version = vcs_tag(input: 'scripts/qemu-version.h.in',
+                         output: 'qemu-version.h',
+                         command: git_describe_version,
+                         fallback: '')
+else
+  # Unlike vcs_tag(), which always defines QEMU_PKGVERSION, leave it out if
+  # empty.  include/qemu/version.h then omits the parentheses from
+  # QEMU_FULL_VERSION.
+  qemu_version_data = configuration_data()
+  if qemu_pkgversion != ''
+    qemu_version_data.set_quoted('QEMU_PKGVERSION', qemu_pkgversion)
+  endif
+  qemu_version = configure_file(output: 'qemu-version.h', configuration: qemu_version_data)
+endif
 genh += qemu_version
 
 hxdep = []
@@ -3689,6 +3715,7 @@ if have_system or have_user
     'target/arm',
     'target/arm/hvf',
     'target/arm/tcg',
+    'target/hexagon',
     'target/hppa',
     'target/i386',
     'target/i386/kvm',
@@ -4167,6 +4194,7 @@ foreach target_base_arch, config_base_arch : config_base_arch_mak
   # prevent common code to access cpu compile time definition,
   # but still allow access to cpu.h
   target_c_args = ['-DCPU_DEFS_H']
+  target_c_args += ['-DTARGET_ARCH_PREFIX=target_' + target_base_arch.to_lower()]
   target_system_c_args = target_c_args + ['-DCOMPILING_SYSTEM_VS_USER', '-DCONFIG_SOFTMMU']
 
   if target_base_arch in target_common_arch
@@ -4274,11 +4302,29 @@ multi_target_supported_targets = [
   'avr-softmmu',
   'hexagon-softmmu',
   'hppa-softmmu',
+  # 'i386-softmmu',
+  # 'loongarch64-softmmu',
   'm68k-softmmu',
   'microblaze-softmmu',
+  # 'mips-softmmu',
+  # 'mips64-softmmu',
+  # 'mips64el-softmmu',
+  # 'mipsel-softmmu',
   'or1k-softmmu',
+  # 'ppc-softmmu',
+  # 'ppc64-softmmu',
+  # 'riscv32-softmmu',
+  'riscv64-softmmu',
   'rx-softmmu',
+  # 's390x-softmmu',
+  # 'sh4-softmmu',
+  # 'sh4eb-softmmu',
+  # 'sparc-softmmu',
+  # 'sparc64-softmmu',
   'tricore-softmmu',
+  # 'x86_64-softmmu',
+  # 'xtensa-softmmu',
+  # 'xtensaeb-softmmu',
 ]
 
 emulators = {}
@@ -4290,6 +4336,7 @@ foreach target : target_dirs
   arch_deps = []
   c_args = ['-DCOMPILING_PER_TARGET',
             '-DCONFIG_TARGET="@0@-config-target.h"'.format(target),
+            '-DTARGET_ARCH_PREFIX=target_' + target_base_arch.to_lower(),
   ]
   link_args = emulator_link_args
 

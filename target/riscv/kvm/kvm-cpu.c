@@ -24,8 +24,10 @@
 
 #include "qemu/timer.h"
 #include "qapi/error.h"
+#include "qapi/qapi-builtin-type-infos.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
+#include "qemu/target-info.h"
 #include "qapi/visitor.h"
 #include "system/system.h"
 #include "system/kvm.h"
@@ -57,6 +59,7 @@ void riscv_kvm_aplic_request(void *opaque, int irq, int level)
 }
 
 static bool cap_has_mp_state;
+static bool mp_state_reset;
 
 #define KVM_RISCV_REG_ID_U32(type, idx) (KVM_REG_RISCV | KVM_REG_SIZE_U32 | \
                                          type | idx)
@@ -539,7 +542,7 @@ static void riscv_cpu_add_kvm_unavail_prop(Object *obj, const char *prop_name)
      * unknown to KVM and error out if the user attempts
      * to enable any of them.
      */
-    object_property_add(obj, prop_name, "bool",
+    object_property_add(obj, prop_name, "bool", &bool_type_info,
                         cpu_get_cfg_unavailable,
                         cpu_set_cfg_unavailable,
                         NULL, (void *)prop_name);
@@ -559,7 +562,7 @@ static void kvm_riscv_add_cpu_user_properties(Object *cpu_obj)
         misa_cfg->name = riscv_get_misa_ext_name(bit);
         misa_cfg->description = riscv_get_misa_ext_description(bit);
 
-        object_property_add(cpu_obj, misa_cfg->name, "bool",
+        object_property_add(cpu_obj, misa_cfg->name, "bool", &bool_type_info,
                             kvm_cpu_get_misa_ext_cfg,
                             kvm_cpu_set_misa_ext_cfg,
                             NULL, misa_cfg);
@@ -575,7 +578,7 @@ static void kvm_riscv_add_cpu_user_properties(Object *cpu_obj)
     for (i = 0; i < ARRAY_SIZE(kvm_multi_ext_cfgs); i++) {
         KVMCPUConfig *multi_cfg = &kvm_multi_ext_cfgs[i];
 
-        object_property_add(cpu_obj, multi_cfg->name, "bool",
+        object_property_add(cpu_obj, multi_cfg->name, "bool", &bool_type_info,
                             kvm_cpu_get_multi_ext_cfg,
                             kvm_cpu_set_multi_ext_cfg,
                             NULL, multi_cfg);
@@ -1443,9 +1446,30 @@ static int kvm_riscv_put_mp_state(CPUState *cs)
     return kvm_vcpu_ioctl(cs, KVM_SET_MP_STATE, &mp_state);
 }
 
+static int kvm_riscv_mp_state_init_received(CPUState *cs)
+{
+    struct kvm_mp_state mp_state = {
+        .mp_state = KVM_MP_STATE_INIT_RECEIVED,
+    };
+
+    if (!cap_has_mp_state || !mp_state_reset) {
+        return 0;
+    }
+
+    /* Let KVM resets the VCPU, The original MP_STATE is preserved*/
+    return kvm_vcpu_ioctl(cs, KVM_SET_MP_STATE, &mp_state);
+}
+
 int kvm_arch_put_registers(CPUState *cs, KvmPutState level, Error **errp)
 {
     int ret = 0;
+
+    if (KVM_PUT_RESET_STATE == level) {
+        ret = kvm_riscv_mp_state_init_received(cs);
+        if (ret) {
+            return ret;
+        }
+    }
 
     ret = kvm_riscv_put_regs_core(cs);
     if (ret) {
@@ -1582,7 +1606,7 @@ int kvm_arch_pre_create_vcpu(CPUState *cpu, Error **errp)
     return 0;
 }
 
-int kvm_arch_init_vcpu(CPUState *cs)
+int kvm_arch_init_vcpu(CPUState *cs, Error **errp)
 {
     int ret = 0;
     RISCVCPU *cpu = RISCV_CPU(cs);
@@ -1592,6 +1616,7 @@ int kvm_arch_init_vcpu(CPUState *cs)
     if (!object_dynamic_cast(OBJECT(cpu), TYPE_RISCV_CPU_HOST)) {
         ret = kvm_vcpu_set_machine_ids(cpu, cs);
         if (ret != 0) {
+            error_setg_errno(errp, -ret, "failed setting machine id");
             return ret;
         }
     }
@@ -1600,6 +1625,9 @@ int kvm_arch_init_vcpu(CPUState *cs)
     kvm_riscv_update_cpu_cfg_isa_ext(cpu, cs);
 
     ret = kvm_vcpu_enable_sbi_dbcn(cpu, cs);
+    if (ret < 0) {
+        error_setg_errno(errp, -ret, "failed kvm_vcpu_enable_sbi_dbcn");
+    }
 
     return ret;
 }
@@ -1623,6 +1651,11 @@ int kvm_arch_get_default_type(MachineState *ms)
 int kvm_arch_init(MachineState *ms, KVMState *s)
 {
     cap_has_mp_state = kvm_check_extension(s, KVM_CAP_MP_STATE);
+
+    if (cap_has_mp_state) {
+        mp_state_reset = !kvm_vm_enable_cap(s, KVM_CAP_RISCV_MP_STATE_RESET, 0);
+    }
+
     return 0;
 }
 
@@ -2208,6 +2241,7 @@ static const TypeInfo kvm_cpu_accel_type_info = {
 
     .parent = TYPE_ACCEL_CPU,
     .class_init = kvm_cpu_accel_class_init,
+    .is_available = target_base_riscv,
     .abstract = true,
 };
 static void kvm_cpu_accel_register_types(void)

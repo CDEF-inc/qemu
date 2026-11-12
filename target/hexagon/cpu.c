@@ -42,9 +42,11 @@
 #include "hexswi.h"
 #include "exec/cpu-interrupt.h"
 #include "exec/page-protection.h"
+#include "hw/hexagon/hexagon_hlx.h"
 #include "exec/target_page.h"
 #include "hw/hexagon/hexagon_globalreg.h"
 #include "hw/hexagon/hexagon_hvx_context.h"
+#include "hw/hexagon/hexagon_hmx_context.h"
 #endif
 
 static ObjectClass *hexagon_cpu_class_by_name(const char *cpu_model)
@@ -72,6 +74,8 @@ static const Property hexagon_cpu_properties[] = {
     DEFINE_PROP_LINK("global-regs", HexagonCPU, globalregs,
         TYPE_HEXAGON_GLOBALREG, HexagonGlobalRegState *),
     DEFINE_PROP_UINT32("htid", HexagonCPU, htid, 0),
+    DEFINE_PROP_LINK("hlx", HexagonCPU, hlx,
+                     TYPE_HEXAGON_HLX, HexagonHLXState *),
 #endif
     DEFINE_PROP_BOOL("lldb-compat", HexagonCPU, cfg.lldb_compat, false),
     DEFINE_PROP_UNSIGNED("lldb-stack-adjust", HexagonCPU, cfg.lldb_stack_adjust,
@@ -88,7 +92,7 @@ const char * const hexagon_regnames[TOTAL_PER_THREAD_REGS] = {
   "sa0", "lc0", "sa1", "lc1", "p3_0", "c5",  "m0",  "m1",
   "usr", "pc",  "ugp", "gp",  "cs0",  "cs1", "c14", "c15",
   "c16", "c17", "c18", "c19", "pkt_cnt",  "insn_cnt", "hvx_cnt", "c23",
-  "c24", "c25", "c26", "c27", "c28",  "c29", "c30", "c31",
+  "c24", "c25", "c26", "c27", "vframelimit", "vsp", "c30", "c31",
 };
 
 #ifndef CONFIG_USER_ONLY
@@ -388,6 +392,13 @@ static TCGTBCPUState hexagon_get_tb_cpu_state(CPUState *cs)
                            GET_SSR_FIELD(SSR_XE, env->t_sreg[HEX_SREG_SSR]));
     hex_flags = FIELD_DP32(hex_flags, TB_FLAGS, CPU_MODE,
                            get_cpu_mode(env));
+    /* Single-step applies only to user and guest mode packets */
+    hex_flags = FIELD_DP32(hex_flags, TB_FLAGS, SS_ACTIVE,
+                           GET_SSR_FIELD(SSR_SS, env->t_sreg[HEX_SREG_SSR]) &&
+                           get_cpu_mode(env) != HEX_CPU_MODE_MONITOR);
+    hex_flags = FIELD_DP32(hex_flags, TB_FLAGS, HMX_COPROC_ENABLED,
+                           cpu->hmx &&
+                           GET_SSR_FIELD(SSR_XE2, env->t_sreg[HEX_SREG_SSR]));
 #else
     hex_flags = FIELD_DP32(hex_flags, TB_FLAGS, MMU_INDEX, MMU_USER_IDX);
 #endif
@@ -426,6 +437,9 @@ static bool hexagon_cpu_has_work(CPUState *cs)
 {
     CPUHexagonState *env = cpu_env(cs);
 
+    if (qatomic_read(&cs->exception_index) != HEX_EVENT_NONE) {
+        return true;
+    }
     return hexagon_thread_is_enabled(env) &&
         (cs->interrupt_request & (CPU_INTERRUPT_HARD | CPU_INTERRUPT_SWI
             | CPU_INTERRUPT_K0_UNLOCK | CPU_INTERRUPT_TLB_UNLOCK
@@ -448,6 +462,9 @@ void hexagon_cpu_soft_reset(CPUHexagonState *env)
 
     BQL_LOCK_GUARD();
     env->llsc_addr = ~0;
+    env->cfi_active = 0;
+    env->cfi_active_log = 0;
+    env->cfi_updated = 0;
     env->t_sreg[HEX_SREG_SSR] = 0;
     hexagon_ssr_set_cause(env, HEX_CAUSE_RESET);
 
@@ -485,6 +502,15 @@ static void hexagon_cpu_reset_hold(Object *obj, ResetType type)
     set_float_default_nan_pattern(0b01111111, &env->hvx_fp_status);
 
     env->llsc_addr = ~0;
+    env->cfi_active = 0;
+    env->cfi_active_log = 0;
+    env->cfi_updated = 0;
+#ifdef CONFIG_USER_ONLY
+    memset(&env->hlx_user_ctx, 0, sizeof(env->hlx_user_ctx));
+    env->hlx_ctx = &env->hlx_user_ctx;
+#else
+    env->hlx_ctx = NULL;
+#endif
 #ifndef CONFIG_USER_ONLY
     memset(env->t_sreg, 0, sizeof(uint32_t) * NUM_SREGS);
     memset(env->greg, 0, sizeof(uint32_t) * NUM_GREGS);
@@ -495,11 +521,18 @@ static void hexagon_cpu_reset_hold(Object *obj, ResetType type)
 
     env->t_sreg[HEX_SREG_HTID] = cpu->htid;
     env->threadId = cpu->htid;
+    if (cs->cpu_index == 0 && cpu->hlx) {
+        hexagon_hlx_reset_all(cpu->hlx);
+    }
+
     hexagon_cpu_soft_reset(env);
     hexagon_hvx_select_context(env, env->t_sreg[HEX_SREG_SSR]);
     env->cause_code = HEX_EVENT_NONE;
     env->gpr[HEX_REG_PC] = cpu->boot_addr;
 #endif
+
+    memset(env->future_LRegs, 0, sizeof(env->future_LRegs));
+    memset(env->tmp_LRegs, 0, sizeof(env->tmp_LRegs));
 }
 
 static void hexagon_cpu_disas_set_info(const CPUState *cs,
@@ -509,6 +542,18 @@ static void hexagon_cpu_disas_set_info(const CPUState *cs,
     info->print_insn = print_insn_hexagon;
     info->endian = BFD_ENDIAN_LITTLE;
     info->target_info = &cpu->cfg;
+}
+
+static bool hexagon_cpu_has_hlx(HexagonCPU *cpu)
+{
+    if (cpu->cfg.hex_def->hex_version < HEX_VER_V85) {
+        return false;
+    }
+#ifdef CONFIG_USER_ONLY
+    return true;
+#else
+    return cpu->hlx && cpu->hlx->num_contexts > 0;
+#endif
 }
 
 static void hexagon_cpu_realize(DeviceState *dev, Error **errp)
@@ -526,9 +571,33 @@ static void hexagon_cpu_realize(DeviceState *dev, Error **errp)
 
     cpu->cfg.hex_def = mcc->hex_def;
 
+    hmx_init_config(cpu);
+#ifdef CONFIG_USER_ONLY
+    /* All threads of the process share one HMX unit */
+    static HmxState *user_hmx;
+
+    if (cpu->hmx_cfg.hmx_present) {
+        if (!user_hmx) {
+            user_hmx = g_new0(HmxState, 1);
+        }
+        cpu->hmx = user_hmx;
+    }
+#else
+    if (cpu->hmx_ctx && cpu->hmx_cfg.hmx_present) {
+        cpu->hmx = &cpu->hmx_ctx->regs;
+    }
+#endif
+    cpu_env(cs)->hmx_state = cpu->hmx;
+
     gdb_register_coprocessor(cs, hexagon_hvx_gdb_read_register,
                              hexagon_hvx_gdb_write_register,
                              gdb_find_static_feature("hexagon-hvx.xml"));
+
+    if (hexagon_cpu_has_hlx(cpu)) {
+        gdb_register_coprocessor(cs, hexagon_hlx_gdb_read_register,
+                                 hexagon_hlx_gdb_write_register,
+                                 gdb_find_static_feature("hexagon-hlx.xml"));
+    }
 
 #ifndef CONFIG_USER_ONLY
     gdb_register_coprocessor(cs, hexagon_sys_gdb_read_register,
@@ -559,11 +628,14 @@ static int hexagon_cpu_mmu_index(CPUState *cs, bool ifetch)
     HexagonCPU *cpu = HEXAGON_CPU(cs);
     int cpu_mode;
 
-    BQL_LOCK_GUARD();
+    /*
+     * No BQL: this runs for every translation block lookup, and the vCPU
+     * threads would otherwise queue up on it.  SYSCFG is read atomically and
+     * the rest is this vCPU's own state.
+     */
     if (cpu->globalregs) {
         uint32_t syscfg =
-            hexagon_globalreg_read(cpu->globalregs, HEX_SREG_SYSCFG,
-                                   env->threadId);
+            hexagon_globalreg_read_syscfg_unlocked(cpu->globalregs);
         uint8_t mmuen = GET_SYSCFG_FIELD(SYSCFG_MMUEN, syscfg);
         if (!mmuen) {
             return MMU_KERNEL_IDX;
@@ -616,6 +688,10 @@ static void hexagon_cpu_init(Object *obj)
                                  qdev_prop_allow_set_link_before_realize,
                                  OBJ_PROP_LINK_STRONG);
     }
+    object_property_add_link(obj, "hmx-context", TYPE_HEXAGON_HMX_CONTEXT,
+                             (Object **)&cpu->hmx_ctx,
+                             qdev_prop_allow_set_link_before_realize,
+                             OBJ_PROP_LINK_STRONG);
 #endif
 }
 
@@ -847,9 +923,8 @@ void hexagon_cpu_do_unaligned_access(CPUState *cs, vaddr addr,
 #endif
 
 static const TCGCPUOps hexagon_tcg_ops = {
-    /* MTTCG not yet supported: require strict ordering */
     .guest_default_memory_order = TCG_MO_ALL,
-    .mttcg_supported = false,
+    .mttcg_supported = true,
     .initialize = hexagon_translate_init,
     .translate_code = hexagon_translate_code,
     .get_tb_cpu_state = hexagon_get_tb_cpu_state,
@@ -975,6 +1050,8 @@ static const TypeInfo hexagon_cpu_type_infos[] = {
     DEFINE_CPU(TYPE_HEXAGON_CPU_V75,              HEX_VER_V75),
     DEFINE_CPU(TYPE_HEXAGON_CPU_V79,              HEX_VER_V79),
     DEFINE_CPU(TYPE_HEXAGON_CPU_V81,              HEX_VER_V81),
+    DEFINE_CPU(TYPE_HEXAGON_CPU_V83,              HEX_VER_V83),
+    DEFINE_CPU(TYPE_HEXAGON_CPU_V85,              HEX_VER_V85),
 };
 
 DEFINE_TYPES(hexagon_cpu_type_infos)

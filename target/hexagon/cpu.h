@@ -18,6 +18,13 @@
 #ifndef HEXAGON_CPU_H
 #define HEXAGON_CPU_H
 
+typedef struct HexagonHLXContext HexagonHLXContext;
+
+#ifdef CONFIG_USER_ONLY
+/* linux-user embeds an HLX context and needs the full type. */
+#include "hw/hexagon/hexagon_hlx.h"
+#endif
+
 #include "fpu/softfloat-types.h"
 
 #ifndef CONFIG_USER_ONLY
@@ -30,12 +37,17 @@
 typedef struct HexagonTLBState HexagonTLBState;
 typedef struct HexagonGlobalRegState HexagonGlobalRegState;
 typedef struct HexagonHVXContextState HexagonHVXContextState;
+typedef struct HexagonHLXState HexagonHLXState;
+typedef struct HexagonHMXContextState HexagonHMXContextState;
 
 #include "cpu-qom.h"
 #include "exec/cpu-common.h"
 #include "exec/target_long.h"
 #include "hex_regs.h"
+#include "hlx/hlx.h"
 #include "mmvec/mmvec.h"
+#include "hmx_config.h"
+#include "hmx_state.h"
 #include "hw/core/registerfields.h"
 #include "qemu/bitmap.h"
 
@@ -75,6 +87,14 @@ typedef struct HexagonHVXContextState HexagonHVXContextState;
 #ifndef CONFIG_USER_ONLY
 #define MMU_GUEST_IDX        1
 #define MMU_KERNEL_IDX       2
+
+/*
+ * TLB entry match is by ASID and global bit, neither of which is encoded in
+ * mmu_idx, so a JTLB change has to be flushed out of every mmu_idx.
+ */
+#define MMU_IDX_ALL          ((1 << MMU_USER_IDX) | \
+                              (1 << MMU_GUEST_IDX) | \
+                              (1 << MMU_KERNEL_IDX))
 
 typedef enum {
     HEX_LOCK_UNLOCKED       = 0,
@@ -132,6 +152,9 @@ typedef struct CPUArchState {
     target_ulong gpr[TOTAL_PER_THREAD_REGS];
     target_ulong pred[NUM_PREGS];
     uint32_t cause_code;
+    uint32_t cfi_active;
+    uint32_t cfi_active_log;
+    uint32_t cfi_updated;
 
     /* For comparing with LLDB on target - see adjust_stack_ptrs function */
     target_ulong last_pc_dumped;
@@ -175,6 +198,20 @@ typedef struct CPUArchState {
 
     MMQReg future_QRegs[NUM_QREGS] QEMU_ALIGNED(16);
 
+    /* Active HLX context, or NULL when disabled or unavailable. */
+    HexagonHLXContext *hlx_ctx;
+
+#ifdef CONFIG_USER_ONLY
+    HexagonHLXContext hlx_user_ctx;
+#endif
+
+    HLXVector future_LRegs[NUM_LREGS] QEMU_ALIGNED(16);
+    HLXVector tmp_LRegs[NUM_LREGS] QEMU_ALIGNED(16);
+    /* Pending HLX store. */
+    HLXVector hlx_store_data QEMU_ALIGNED(16);
+    target_ulong hlx_store_va;
+    bool hlx_store_pending;
+
     /* Temporaries used within instructions */
     MMVectorPair VuuV QEMU_ALIGNED(16);
     MMVectorPair VvvV QEMU_ALIGNED(16);
@@ -186,6 +223,8 @@ typedef struct CPUArchState {
     target_ulong vstore_pending[VSTORES_MAX];
     bool vtcm_pending;
     VTCMStoreLog vtcm_log;
+
+    HmxState *hmx_state;
 } CPUHexagonState;
 
 typedef struct HexagonCPUClass {
@@ -206,12 +245,16 @@ struct ArchCPU {
     HexagonCPUConfig cfg;
 #ifndef CONFIG_USER_ONLY
     HexagonHVXContextState *hvx_ctx[HVX_CONTEXTS_MAX];
+    HexagonHMXContextState *hmx_ctx;
     HexagonTLBState *tlb;
     uint32_t boot_addr;
     HexagonGlobalRegState *globalregs;
     uint32_t htid;
     HexL2VicInterface *l2vic;
+    HexagonHLXState *hlx;
 #endif
+    HmxState *hmx;
+    HmxConfig hmx_cfg;
 };
 
 static inline HexagonHVXContext *hex_hvx(CPUHexagonState *env)
@@ -227,6 +270,8 @@ FIELD(TB_FLAGS, IS_TIGHT_LOOP, 0, 1)
 FIELD(TB_FLAGS, MMU_INDEX, 1, 3)
 FIELD(TB_FLAGS, HVX_COPROC_ENABLED, 5, 1)
 FIELD(TB_FLAGS, CPU_MODE, 6, 2)
+FIELD(TB_FLAGS, SS_ACTIVE, 8, 1)
+FIELD(TB_FLAGS, HMX_COPROC_ENABLED, 15, 1)
 
 G_NORETURN void hexagon_raise_exception_err(CPUHexagonState *env,
                                             uint32_t exception,

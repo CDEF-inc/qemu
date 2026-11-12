@@ -6932,8 +6932,7 @@ static abi_long do_map_shadow_stack(CPUArchState *env, abi_ulong addr,
 static pthread_mutex_t clone_lock = PTHREAD_MUTEX_INITIALIZER;
 typedef struct {
     CPUArchState *env;
-    pthread_mutex_t mutex;
-    pthread_cond_t cond;
+    QemuSemaphore sem;
     pthread_t thread;
     uint32_t tid;
     abi_ulong child_tidptr;
@@ -6964,9 +6963,7 @@ static void *clone_func(void *arg)
     /* Enable signals.  */
     sigprocmask(SIG_SETMASK, &info->sigmask, NULL);
     /* Signal to the parent that we're ready.  */
-    pthread_mutex_lock(&info->mutex);
-    pthread_cond_broadcast(&info->cond);
-    pthread_mutex_unlock(&info->mutex);
+    qemu_sem_post(&info->sem);
     /* Wait until the parent has finished initializing the tls state.  */
     pthread_mutex_lock(&clone_lock);
     pthread_mutex_unlock(&clone_lock);
@@ -7071,9 +7068,7 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
         }
 
         memset(&info, 0, sizeof(info));
-        pthread_mutex_init(&info.mutex, NULL);
-        pthread_mutex_lock(&info.mutex);
-        pthread_cond_init(&info.cond, NULL);
+        qemu_sem_init(&info.sem, 0);
         info.env = new_env;
         if (flags & CLONE_CHILD_SETTID) {
             info.child_tidptr = child_tidptr;
@@ -7097,7 +7092,7 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
         pthread_attr_destroy(&attr);
         if (ret == 0) {
             /* Wait for the child to initialize.  */
-            pthread_cond_wait(&info.cond, &info.mutex);
+            qemu_sem_wait(&info.sem);
             ret = info.tid;
         } else {
             errno = ret;
@@ -7111,9 +7106,7 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
 #endif
             g_free(ts);
         }
-        pthread_mutex_unlock(&info.mutex);
-        pthread_cond_destroy(&info.cond);
-        pthread_mutex_destroy(&info.mutex);
+        qemu_sem_destroy(&info.sem);
         pthread_mutex_unlock(&clone_lock);
     } else {
         /* if no CLONE_VM, we consider it is a fork */
@@ -11463,6 +11456,14 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
 #endif
 #if defined(TARGET_NR_getrandom) && defined(__NR_getrandom)
     case TARGET_NR_getrandom:
+        if (arg2 == 0) {
+            /*
+             * A zero-length request has no buffer to lock, and the kernel
+             * never looks at the pointer for it, so pass the call through
+             * instead of failing on a NULL or otherwise unusable address.
+             */
+            return get_errno(getrandom(NULL, 0, arg3));
+        }
         p = lock_user(VERIFY_WRITE, arg1, arg2, 0);
         if (!p) {
             return -TARGET_EFAULT;
@@ -11550,7 +11551,7 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
             struct itimerval value;
 
             ret = get_errno(getitimer(arg1, &value));
-            if (!is_error(ret) && arg2) {
+            if (!is_error(ret)) {
                 if (copy_to_user_timeval(arg2,
                                          &value.it_interval)
                     || copy_to_user_timeval(arg2 + sizeof(struct target_timeval),
@@ -11665,7 +11666,7 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
             struct target_sysinfo *target_value;
             struct sysinfo value;
             ret = get_errno(sysinfo(&value));
-            if (!is_error(ret) && arg1)
+            if (!is_error(ret))
             {
                 if (!lock_user_struct(VERIFY_WRITE, target_value, arg1, 0))
                     return -TARGET_EFAULT;

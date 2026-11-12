@@ -48,6 +48,7 @@ static void set_ssr_ex_cause(CPUHexagonState *env, int ex, uint32_t cause)
     old = env->t_sreg[HEX_SREG_SSR];
     SET_SYSTEM_FIELD(env, HEX_SREG_SSR, SSR_EX, ex);
     SET_SYSTEM_FIELD(env, HEX_SREG_SSR, SSR_CAUSE, cause);
+    SET_SYSTEM_FIELD(env, HEX_SREG_SSR, SSR_CFI, env->cfi_active);
     new = env->t_sreg[HEX_SREG_SSR];
     hexagon_modify_ssr(env, new, old);
 }
@@ -240,8 +241,10 @@ static bool hex_is_qualified_for_int(CPUHexagonState *env, int int_num)
     bool ssr_ie = get_ssr_ie(env);
     bool ssr_ex = get_ssr_ex(env);
     bool imask = get_imask_bit(env, int_num);
-    bool lock_pending = env->k0_lock_state != HEX_LOCK_UNLOCKED ||
-                        env->tlb_lock_state != HEX_LOCK_UNLOCKED;
+    bool lock_pending = env->k0_lock_state == HEX_LOCK_WAITING ||
+                        env->k0_lock_state == HEX_LOCK_QUEUED ||
+                        env->tlb_lock_state == HEX_LOCK_WAITING ||
+                        env->tlb_lock_state == HEX_LOCK_QUEUED;
 
     return syscfg_gie && !iad && ssr_ie && !ssr_ex && !imask && !lock_pending;
 }
@@ -304,8 +307,8 @@ static bool int_should_dtg(CPUHexagonState *env, int int_num)
     return GET_FIELD(CCR_GIE, ccr);
 }
 
-static void guest_interrupt_entry(CPUHexagonState *env, uint32_t cause,
-                                  uint32_t event_pc)
+static void guest_interrupt_entry(CPUHexagonState *env, int int_num,
+                                  uint32_t cause, uint32_t event_pc)
 {
     uint32_t old_ssr = env->t_sreg[HEX_SREG_SSR];
     uint32_t new_ssr = old_ssr;
@@ -327,6 +330,7 @@ static void guest_interrupt_entry(CPUHexagonState *env, uint32_t cause,
 
     fSET_FIELD(new_ssr, SSR_SS, 0);
     fSET_FIELD(new_ssr, SSR_GM, 1);
+    fSET_FIELD(new_ssr, SSR_CAUSE, HEX_CAUSE_INT0 | int_num);
     env->t_sreg[HEX_SREG_SSR] = new_ssr;
     hexagon_modify_ssr(env, new_ssr, old_ssr);
 
@@ -366,13 +370,15 @@ static void hex_accept_int(CPUHexagonState *env, int int_num)
         uint32_t vid = extract32(vid_packed,
                                  (vic_group & 1) ? 16 : 0, 16);
 
-        guest_interrupt_entry(env, vid, elr);
+        guest_interrupt_entry(env, int_num, vid, elr);
     } else {
         uint32_t evb =
             hexagon_globalreg_read(cpu->globalregs, HEX_SREG_EVB,
                                    env->threadId);
 
         set_ssr_ex_cause(env, 1, HEX_CAUSE_INT0 | int_num);
+        env->cfi_active = 0;
+        env->cfi_updated = 0;
         set_elr(env, elr);
         env->gpr[HEX_REG_PC] = evb | (cs->exception_index << 2);
     }
@@ -386,17 +392,19 @@ bool hex_check_interrupts(CPUHexagonState *env)
 {
     CPUState *cs = env_cpu(env);
     bool int_handled = false;
-    bool ssr_ex = get_ssr_ex(env);
+    bool ssr_ex;
     int max_ints = 32;
     bool schedcfgen;
+
+    BQL_LOCK_GUARD();
+
+    ssr_ex = get_ssr_ex(env);
 
     /* Early exit if nothing pending */
     if (get_ipend(env) == 0) {
         restore_state(env, false);
         return false;
     }
-
-    BQL_LOCK_GUARD();
     /* Only check priorities when schedcfgen is set */
     schedcfgen = get_schedcfgen(env);
     for (int i = 0; i < max_ints; i++) {

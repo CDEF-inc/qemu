@@ -37,8 +37,10 @@
 #include "mmvec/mmvec.h"
 #include "mmvec/macros.h"
 #include "op_helper.h"
+#include "opcodes.h"
 #include "cpu_helper.h"
 #include "tcg/tcg-gvec-desc.h"
+#include "trace.h"
 #include "translate.h"
 #ifdef CONFIG_USER_ONLY
 #include "qemu/timer.h"
@@ -68,6 +70,11 @@ uint64_t HELPER(utimer)(void)
 }
 #endif
 
+void HELPER(hlx_trace_op)(CPUHexagonState *env, uint32_t opcode)
+{
+    trace_hexagon_hlx_op(opcode, opcode_names[opcode]);
+}
+
 #define SF_BIAS        127
 #define SF_MANTBITS    23
 
@@ -79,7 +86,6 @@ void do_raise_exception(CPUHexagonState *env, uint32_t exception,
     CPUState *cs = env_cpu(env);
     qemu_log_mask(CPU_LOG_INT, "%s: 0x%08" PRIx32 ", @ %08" PRIx32 "\n",
                   __func__, exception, PC);
-    ASSERT_DIRECT_TO_GUEST_UNSET(env, exception);
 
     env->gpr[HEX_REG_PC] = PC;
     cs->exception_index = exception;
@@ -93,7 +99,7 @@ G_NORETURN void hexagon_raise_exception_err(CPUHexagonState *env,
     do_raise_exception(env, exception, pc, 0);
 }
 
-G_NORETURN void HELPER(hexagon_raise_exception)(CPUHexagonState *env, uint32_t excp,
+G_NORETURN void HELPER(raise_exception)(CPUHexagonState *env, uint32_t excp,
                                         uint32_t PC)
 {
     hexagon_raise_exception_err(env, excp, PC);
@@ -926,6 +932,79 @@ float32 HELPER(sfsub)(CPUHexagonState *env, float32 RsV, float32 RtV,
     return RdV;
 }
 
+uint64_t HELPER(vsfadd)(CPUHexagonState *env, uint64_t RssV, uint64_t RttV,
+                        uint32_t pkt_need_commit)
+{
+    uint64_t RddV;
+    float32 lo, hi;
+
+    arch_fpop_start(env);
+    lo = float32_add(RssV, RttV, &env->fp_status);
+    hi = float32_add(RssV >> 32, RttV >> 32, &env->fp_status);
+    arch_fpop_end(env, pkt_need_commit);
+    RddV = lo | ((uint64_t)hi << 32);
+    return RddV;
+}
+
+uint64_t HELPER(vsfsub)(CPUHexagonState *env, uint64_t RssV, uint64_t RttV,
+                        uint32_t pkt_need_commit)
+{
+    uint64_t RddV;
+    float32 lo, hi;
+
+    arch_fpop_start(env);
+    lo = float32_sub(RssV, RttV, &env->fp_status);
+    hi = float32_sub(RssV >> 32, RttV >> 32, &env->fp_status);
+    arch_fpop_end(env, pkt_need_commit);
+    RddV = lo | ((uint64_t)hi << 32);
+    return RddV;
+}
+
+uint64_t HELPER(vsfmpy)(CPUHexagonState *env, uint64_t RssV, uint64_t RttV,
+                        uint32_t pkt_need_commit)
+{
+    uint64_t RddV;
+    float32 lo, hi;
+
+    arch_fpop_start(env);
+    lo = float32_mul(RssV, RttV, &env->fp_status);
+    hi = float32_mul(RssV >> 32, RttV >> 32, &env->fp_status);
+    arch_fpop_end(env, pkt_need_commit);
+    RddV = lo | ((uint64_t)hi << 32);
+    return RddV;
+}
+
+uint64_t HELPER(vsffma)(CPUHexagonState *env, uint64_t RxxV, uint64_t RssV,
+                        uint64_t RttV, uint32_t pkt_need_commit)
+{
+    uint64_t RddV;
+    float32 lo, hi;
+
+    arch_fpop_start(env);
+    lo = float32_muladd(RssV, RttV, RxxV, 0, &env->fp_status);
+    hi = float32_muladd(RssV >> 32, RttV >> 32, RxxV >> 32, 0,
+                        &env->fp_status);
+    arch_fpop_end(env, pkt_need_commit);
+    RddV = lo | ((uint64_t)hi << 32);
+    return RddV;
+}
+
+uint64_t HELPER(vsffms)(CPUHexagonState *env, uint64_t RxxV, uint64_t RssV,
+                        uint64_t RttV, uint32_t pkt_need_commit)
+{
+    uint64_t RddV;
+    float32 lo, hi;
+
+    arch_fpop_start(env);
+    lo = float32_muladd(RssV, RttV, RxxV, float_muladd_negate_product,
+                        &env->fp_status);
+    hi = float32_muladd(RssV >> 32, RttV >> 32, RxxV >> 32,
+                        float_muladd_negate_product, &env->fp_status);
+    arch_fpop_end(env, pkt_need_commit);
+    RddV = lo | ((uint64_t)hi << 32);
+    return RddV;
+}
+
 int32_t HELPER(sfcmpeq)(CPUHexagonState *env, float32 RsV, float32 RtV,
                         uint32_t pkt_need_commit)
 {
@@ -1283,6 +1362,12 @@ void HELPER(modify_ssr)(CPUHexagonState *env, uint32_t new, uint32_t old)
     hexagon_modify_ssr(env, new, old);
 }
 
+void HELPER(modify_ccr)(CPUHexagonState *env, uint32_t new, uint32_t old)
+{
+    BQL_LOCK_GUARD();
+    hexagon_modify_ccr(env, new, old);
+}
+
 static void hex_k0_lock(CPUHexagonState *env, uint32_t PC)
 {
     HexagonCPU *cpu = env_archcpu(env);
@@ -1592,7 +1677,6 @@ void HELPER(raise_stack_overflow)(CPUHexagonState *env, uint32_t slot,
     cs = env_cpu(env);
     cs->exception_index = HEX_EVENT_PRECISE;
     env->cause_code = HEX_CAUSE_STACK_LIMIT;
-    ASSERT_DIRECT_TO_GUEST_UNSET(env, cs->exception_index);
 
     if (slot == 0) {
         env->t_sreg[HEX_SREG_BADVA0] = badva;
@@ -1613,26 +1697,30 @@ void HELPER(raise_stack_overflow)(CPUHexagonState *env, uint32_t slot,
 void HELPER(ciad)(CPUHexagonState *env, uint32_t mask)
 {
     uint32_t iad;
+    uint32_t was_set;
     HexagonCPU *cpu;
 
     BQL_LOCK_GUARD();
     cpu = env_archcpu(env);
     if (cpu->cfg.hex_def->hex_version >= HEX_VER_V81) {
         iad = hexagon_globalreg_read(cpu->globalregs, HEX_SREG_IAD,
-                                     env->threadId) & ~mask;
-        hexagon_globalreg_write(cpu->globalregs, HEX_SREG_IAD, iad,
+                                     env->threadId);
+        was_set = iad & mask;
+        hexagon_globalreg_write(cpu->globalregs, HEX_SREG_IAD, iad & ~mask,
                                 env->threadId);
     } else {
         uint32_t ipendad =
             hexagon_globalreg_read(cpu->globalregs, HEX_SREG_IPENDAD,
                                    env->threadId);
 
-        fSET_FIELD(ipendad, IPENDAD_IAD,
-                   fGET_FIELD(ipendad, IPENDAD_IAD) & ~mask);
+        iad = fGET_FIELD(ipendad, IPENDAD_IAD);
+        was_set = iad & mask;
+        fSET_FIELD(ipendad, IPENDAD_IAD, iad & ~mask);
         hexagon_globalreg_write(cpu->globalregs, HEX_SREG_IPENDAD,
                                 ipendad, env->threadId);
     }
-    l2vic_clear_interrupt(cpu->l2vic);
+    /* Only an interrupt that was taken, or set with siad, can be cleared */
+    l2vic_clear_interrupt(cpu->l2vic, was_set);
     hex_interrupt_update(env);
 }
 
@@ -1661,6 +1749,12 @@ void HELPER(siad)(CPUHexagonState *env, uint32_t mask)
         }
     }
     hex_interrupt_update(env);
+}
+
+void HELPER(tlbinvasid)(CPUHexagonState *env, uint32_t RsV)
+{
+    BQL_LOCK_GUARD();
+    hex_tlb_invalidate_asid(env, extract32(RsV, 20, 7));
 }
 
 void HELPER(swi)(CPUHexagonState *env, uint32_t mask)
@@ -1839,7 +1933,7 @@ void HELPER(resched)(CPUHexagonState *env)
     resched(env);
 }
 
-void HELPER(hexagon_wait)(CPUHexagonState *env)
+void HELPER(wait)(CPUHexagonState *env)
 {
     BQL_LOCK_GUARD();
 
@@ -1900,6 +1994,10 @@ void HELPER(sreg_write_masked)(CPUHexagonState *env, uint32_t reg, uint32_t val)
 {
     BQL_LOCK_GUARD();
     if (reg < HEX_SREG_GLB_START) {
+        if (reg == HEX_SREG_IMASK &&
+            env_archcpu(env)->cfg.hex_def->hex_version < HEX_VER_V81) {
+            val = deposit32(env->t_sreg[reg], 0, 16, val);
+        }
         env->t_sreg[reg] = val;
     } else {
         HexagonCPU *cpu = env_archcpu(env);
@@ -2054,6 +2152,18 @@ void HELPER(pending_interrupt)(CPUHexagonState *env)
 
 #define BOGUS_HELPER(tag) \
     printf("ERROR: bogus helper: " #tag "\n")
+
+void HELPER(mxclracc)(CPUHexagonState *env)
+{
+    HmxState *hmx = env->hmx_state;
+    int i;
+
+    g_assert(hmx);
+
+    for (i = 0; i < HMX_NUM_ACC_SETS; i++) {
+        memset(&hmx->acc[i].fxp_primary, 0, sizeof(hmx->acc[i].fxp_primary));
+    }
+}
 
 #include "helper_funcs_generated.c.inc"
 

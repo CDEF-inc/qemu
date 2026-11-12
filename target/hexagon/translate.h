@@ -46,6 +46,7 @@ typedef struct DisasContext {
     bool implicit_usr_write;
 #ifndef CONFIG_USER_ONLY
     uint32_t cpu_mode;
+    bool ss_active;
     int greg_log[GREG_WRITES_MAX];
     int greg_log_idx;
     DECLARE_BITMAP(gregs_written, NUM_GREGS);
@@ -90,6 +91,7 @@ typedef struct DisasContext {
     TCGCond branch_cond;
     target_ulong branch_dest;
     bool is_tight_loop;
+    bool hlx_check_emitted;
     bool short_circuit;
     bool ieee_fp_extension;
     bool read_after_write;
@@ -100,9 +102,58 @@ typedef struct DisasContext {
     TCGv dczero_addr;
     bool hvx_coproc_enabled;
     bool hvx_check_emitted;
+    bool hlx_coproc_enabled;
+    TCGv_ptr hlx_base;
+    bool     hlx_base_loaded;
+    int lreg_log[NUM_LREGS];
+    int lreg_log_idx;
+    int lreg_tmp_log[NUM_LREGS];
+    int lreg_tmp_log_idx;
+    DECLARE_BITMAP(lregs_updated, NUM_LREGS);
+    DECLARE_BITMAP(lregs_multi_write, NUM_LREGS);
+    DECLARE_BITMAP(lregs_updated_tmp, NUM_LREGS);
+    bool hmx_coproc_enabled;
+    bool hmx_check_emitted;
 } DisasContext;
 
 bool is_gather_store_insn(DisasContext *ctx);
+
+static inline TCGv_ptr ctx_get_hlx_base(DisasContext *ctx)
+{
+    if (!ctx->hlx_base_loaded) {
+        ctx->hlx_base = tcg_temp_new_ptr();
+        tcg_gen_ld_ptr(ctx->hlx_base, tcg_env,
+                       offsetof(CPUHexagonState, hlx_ctx));
+        ctx->hlx_base_loaded = true;
+    }
+    return ctx->hlx_base;
+}
+
+static inline void ctx_log_lreg_write(DisasContext *ctx, int rnum)
+{
+    if (test_bit(rnum, ctx->lregs_updated)) {
+        set_bit(rnum, ctx->lregs_multi_write);
+    } else {
+        ctx->lreg_log[ctx->lreg_log_idx] = rnum;
+        ctx->lreg_log_idx++;
+        set_bit(rnum, ctx->lregs_updated);
+    }
+}
+
+static inline void ctx_log_lreg_write_pair(DisasContext *ctx, int rnum)
+{
+    ctx_log_lreg_write(ctx, rnum ^ 0);
+    ctx_log_lreg_write(ctx, rnum ^ 1);
+}
+
+static inline void ctx_log_lreg_tmp_write(DisasContext *ctx, int rnum)
+{
+    if (!test_bit(rnum, ctx->lregs_updated_tmp)) {
+        ctx->lreg_tmp_log[ctx->lreg_tmp_log_idx] = rnum;
+        ctx->lreg_tmp_log_idx++;
+        set_bit(rnum, ctx->lregs_updated_tmp);
+    }
+}
 
 #ifndef CONFIG_USER_ONLY
 static inline void ctx_log_greg_write(DisasContext *ctx, int rnum)
@@ -364,6 +415,10 @@ extern TCGv_i64 hex_llsc_val_i64;
 extern TCGv hex_vstore_addr[VSTORES_MAX];
 extern TCGv hex_vstore_size[VSTORES_MAX];
 extern TCGv hex_vstore_pending[VSTORES_MAX];
+extern TCGv_i32 hex_cfi_active;
+extern TCGv_i32 hex_cfi_active_log;
+extern TCGv_i32 hex_cfi_updated;
+void gen_precise_exception(int cause, uint32_t pc);
 #ifdef CONFIG_USER_ONLY
 #define hex_hvx_ptr tcg_env
 #define HEX_HVX_OFFSET(member) offsetof(CPUHexagonState, hvx_ctx.member)
