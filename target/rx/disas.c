@@ -1689,7 +1689,7 @@ static bool trans_SETPSW(DisasContext *ctx, arg_SETPSW *a)
 /* mvtipl #imm */
 static bool trans_MVTIPL(DisasContext *ctx, arg_MVTIPL *a)
 {
-    prt("movtipl\t#%d", a->imm);
+    prt("mvtipl\t#%d", a->imm);
     return true;
 }
 
