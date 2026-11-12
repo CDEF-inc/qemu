@@ -115,7 +115,8 @@ void rx_cpu_do_interrupt(CPUState *cs)
         env->bpc = env->pc;
         env->bpsw = save_psw;
         env->pc = env->fintv;
-        env->psw_ipl = 15;
+        /* The level of the accepted interrupt, as for a normal one */
+        env->psw_ipl = env->ack_ipl;
         cpu_reset_interrupt(cs, CPU_INTERRUPT_FIR);
         qemu_set_irq(env->ack, env->ack_irq);
         qemu_plugin_vcpu_interrupt_cb(cs, last_pc);
@@ -147,7 +148,15 @@ void rx_cpu_do_interrupt(CPUState *cs)
         }
 
         if (vec == 30) {
-            /* Non-maskable interrupt */
+            /*
+             * Non-maskable interrupt: IPL 15, or on RXv3e 1Fh, and 0Fh in
+             * the non-secure world (RXv3e manual 5.5.8).
+             */
+            env->psw_ipl = 15;
+            if (rx_has_feature(env, RX_FEATURE_V3E) &&
+                rx_world(env) != RX_WORLD_NONSECURE) {
+                env->psw_ipl = 0x1f;
+            }
             qemu_plugin_vcpu_interrupt_cb(cs, last_pc);
         } else {
             qemu_plugin_vcpu_exception_cb(cs, last_pc);
@@ -189,9 +198,14 @@ bool rx_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
         env->ack_ipl = env->req_ipl;
         accept = 1;
     }
-    /* hardware interrupt (FIR) */
+    /*
+     * hardware interrupt (FIR): accepted, like a normal one, above the
+     * current IPL, which becomes the interrupt's level
+     */
     if ((interrupt_request & CPU_INTERRUPT_FIR) &&
-        env->psw_i && (env->psw_ipl < 15)) {
+        env->psw_i && (env->psw_ipl < env->req_ipl)) {
+        env->ack_irq = env->req_irq;
+        env->ack_ipl = env->req_ipl;
         accept = 1;
     }
     if (accept) {
